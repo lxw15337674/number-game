@@ -31,12 +31,12 @@
         "vue": "3.5.13"
     },
     "devDependencies": {
-        "@types/node": "^20.11.20",
-        "terser": "^5.31.0",
-        "@vitejs/plugin-vue": "^5.2.2",
+        "@types/node": "^20.19.27",
+        "@vitejs/plugin-vue": "^5.2.4",
         "@vue/tsconfig": "^0.7.0",
-        "typescript": "~5.7.2",
-        "vite": "^6.3.1",
-        "vue-tsc": "^2.2.8"
+        "terser": "^5.44.1",
+        "typescript": "~5.7.3",
+        "vite": "^6.4.1",
+        "vue-tsc": "^2.2.12"
     }
 }

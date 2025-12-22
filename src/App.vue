@@ -12,6 +12,7 @@ const lastDuration = ref(0);
 const currentTime = ref('0.00');
 const penaltyTime = ref(0);
 const isPenalized = ref(false);
+const currentRuleText = ref('加载中...'); // New state for game rule
 let timerInterval: any = null;
 let startTime = 0;
 
@@ -65,12 +66,18 @@ onMounted(() => {
             isPenalized.value = false;
         }, 500);
     });
+
+    // Listen for rule updates
+    EventBus.on('update-rule', (rule: string) => {
+        currentRuleText.value = rule;
+    });
 });
 
 onUnmounted(() => {
     stopGameTimer();
     EventBus.off('game-solved');
     EventBus.off('time-penalty');
+    EventBus.off('update-rule');
 });
 </script>
 
@@ -78,7 +85,8 @@ onUnmounted(() => {
     <div class="game-container">
         <!-- Header / HUD -->
         <div class="hud">
-            <h1>找茬：数字篇</h1>
+            <h1>数字篇</h1>
+            <div class="rule-display">{{ currentRuleText }}</div>
             <div class="timer" :class="{ penalized: isPenalized }">时间: {{ currentTime }} s</div>
         </div>
 
@@ -109,13 +117,28 @@ onUnmounted(() => {
 }
 
 .hud {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     justify-content: space-between;
+    align-items: center; /* Center items vertically */
     width: 100%;
     max-width: 1024px;
     padding: 10px 20px;
     background: rgba(0, 0, 0, 0.5);
     z-index: 10;
+    box-sizing: border-box;
+}
+
+.rule-display {
+    font-size: 1.8rem;
+    font-weight: bold;
+    color: #f1c40f; /* Gold color for importance */
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    flex-grow: 1;
+    text-align: center;
 }
 
 .timer {
@@ -123,6 +146,8 @@ onUnmounted(() => {
     font-weight: bold;
     color: #00ff00;
     transition: color 0.2s, transform 0.2s;
+    min-width: 120px; /* Prevent jitter */
+    text-align: right;
 }
 
 .timer.penalized {
