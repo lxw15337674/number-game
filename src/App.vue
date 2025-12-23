@@ -7,17 +7,14 @@ import { GameDataManager } from './game/data/GameData';
 
 // State
 const phaserRef = ref();
-const currentRuleText = ref('加载中...');
 const dataManager = GameDataManager.getInstance();
-
-// Gameplay Stats
-const globalTime = ref(60);
-const maxTime = ref(60);
-const energy = ref(0);
-const currentLevel = ref(1);
-const isFever = ref(false);
-const bossHP = ref<number | null>(null);
 const userCoins = ref(dataManager.coins);
+
+// UI State
+const showLevelIntro = ref(false);
+const showRoundTransition = ref(false);
+const levelIntroData = ref({ level: 1, isBoss: false, ruleText: '' });
+const roundTransitionData = ref({ round: 1, total: 3 });
 
 // Modals
 const showPerks = ref(false);
@@ -81,6 +78,16 @@ const closeShop = () => {
     EventBus.emit('restart-game');
 };
 
+const startLevel = () => {
+    showLevelIntro.value = false;
+    EventBus.emit('start-level');
+};
+
+const continueNextRound = () => {
+    showRoundTransition.value = false;
+    EventBus.emit('next-round');
+};
+
 const selectPerk = (perkId: string) => {
     showPerks.value = false;
     EventBus.emit('apply-perk', perkId);
@@ -98,19 +105,21 @@ onMounted(() => {
         userCoins.value = dataManager.coins;
     });
 
-    EventBus.on('update-hud', (data: any) => {
-        globalTime.value = data.time;
-        energy.value = data.energy;
-        currentLevel.value = data.level;
-        isFever.value = data.isFever;
-        bossHP.value = data.bossHP;
-        
-        // Dynamic max time estimation for progress bar
-        if (data.time > maxTime.value) maxTime.value = data.time;
+    EventBus.on('level-intro', (data: any) => {
+        levelIntroData.value = {
+            level: data.level,
+            isBoss: data.isBoss,
+            ruleText: data.ruleText
+        };
+        showLevelIntro.value = true;
     });
 
-    EventBus.on('update-rule', (rule: string) => {
-        currentRuleText.value = rule;
+    EventBus.on('round-transition', (data: any) => {
+        roundTransitionData.value = {
+            round: data.round,
+            total: data.total
+        };
+        showRoundTransition.value = true;
     });
 
     EventBus.on('show-perks', () => {
@@ -129,8 +138,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-    EventBus.off('update-hud');
-    EventBus.off('update-rule');
+    EventBus.off('level-intro');
+    EventBus.off('round-transition');
     EventBus.off('show-perks');
     EventBus.off('game-over');
     EventBus.off('data-updated');
@@ -138,33 +147,25 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="game-container" :class="{ 'fever-active': isFever }">
-        <!-- HUD -->
-        <div class="hud">
-            <div class="stats-left">
-                <div class="level-info">第 {{ currentLevel }} 关</div>
-                <div class="boss-hp" v-if="bossHP !== null">
-                    BOSS HP: 
-                    <span v-for="i in 3" :key="i" class="hp-dot" :class="{ active: i <= bossHP }"></span>
-                </div>
-            </div>
+    <div class="game-container">
+        <PhaserGame ref="phaserRef" />
 
-            <div class="rule-display">{{ currentRuleText }}</div>
-
-            <div class="stats-right">
-                <div class="coin-display">🪙 {{ userCoins }}</div>
-                <div class="bar-container time-bar">
-                    <div class="bar-fill" :style="{ width: (globalTime / maxTime * 100) + '%' }"></div>
-                    <span class="bar-text">时间: {{ Math.ceil(globalTime) }}s</span>
-                </div>
-                <div class="bar-container energy-bar">
-                    <div class="bar-fill" :style="{ width: energy + '%' }"></div>
-                    <span class="bar-text">能量: {{ Math.floor(energy) }}%</span>
-                </div>
+        <!-- Level Intro -->
+        <div v-if="showLevelIntro" class="modal-overlay level-intro-overlay" @click="startLevel">
+            <div class="intro-content">
+                <h1 class="level-title">{{ levelIntroData.isBoss ? '⚔️ BOSS 战' : '第 ' + levelIntroData.level + ' 关' }}</h1>
+                <p class="rule-intro">{{ levelIntroData.ruleText }}</p>
+                <button class="start-btn">点击开始</button>
             </div>
         </div>
 
-        <PhaserGame ref="phaserRef" />
+        <!-- Round Transition -->
+        <div v-if="showRoundTransition" class="modal-overlay transition-overlay" @click="continueNextRound">
+            <div class="transition-content">
+                <h2 class="round-text">回合 {{ roundTransitionData.round }}/{{ roundTransitionData.total }}</h2>
+                <p class="continue-hint">点击继续</p>
+            </div>
+        </div>
 
         <!-- Perk Selection -->
         <div v-if="showPerks" class="modal-overlay">
@@ -251,101 +252,7 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     background-color: #0b0014;
-    transition: box-shadow 0.3s;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-}
-
-.game-container.fever-active {
-    box-shadow: inset 0 0 100px #f1c40f;
-}
-
-.hud {
-    position: absolute;
-    top: 0;
-    width: 100%;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    padding: 15px 30px;
-    background: linear-gradient(180deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 100%);
-    z-index: 10;
-    box-sizing: border-box;
-    pointer-events: none;
-}
-
-.rule-display {
-    font-size: 2rem;
-    font-weight: bold;
-    color: #f1c40f;
-    text-shadow: 0 0 10px rgba(241, 196, 15, 0.8);
-    margin-top: 10px;
-    text-align: center;
-}
-
-.stats-right {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-}
-
-.coin-display {
-    font-size: 1.5rem;
-    color: #f1c40f;
-    margin-bottom: 5px;
-    font-weight: bold;
-    text-shadow: 1px 1px 2px black;
-}
-
-.bar-container {
-    width: 220px;
-    height: 28px;
-    background: rgba(0,0,0,0.6);
-    border-radius: 14px;
-    margin-bottom: 8px;
-    position: relative;
-    overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.2);
-}
-
-.bar-fill {
-    height: 100%;
-    transition: width 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-}
-
-.time-bar .bar-fill { background: linear-gradient(90deg, #e74c3c, #c0392b); }
-.energy-bar .bar-fill { background: linear-gradient(90deg, #3498db, #2980b9); }
-
-.bar-text {
-    position: absolute;
-    width: 100%;
-    text-align: center;
-    font-size: 1rem;
-    line-height: 28px;
-    color: white;
-    font-weight: bold;
-    text-shadow: 1px 1px 2px black;
-}
-
-.boss-hp {
-    margin-top: 5px;
-    font-size: 1rem;
-    color: #ff4757;
-    font-weight: bold;
-}
-
-.hp-dot {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #333;
-    margin-left: 5px;
-    border: 2px solid #ff4757;
-}
-
-.hp-dot.active {
-    background: #ff4757;
-    box-shadow: 0 0 10px #ff4757;
 }
 
 /* Modal Styles */
@@ -448,4 +355,89 @@ onUnmounted(() => {
 .shop-btn { background: #fbc531; color: #2f3640; }
 .close-btn { background: #e84118; color: white; width: 100%; margin: 0; margin-top: 10px; }
 
+/* Level Intro */
+.level-intro-overlay {
+    cursor: pointer;
+}
+
+.intro-content {
+    text-align: center;
+    animation: fadeInScale 0.5s ease;
+}
+
+.level-title {
+    font-size: 4rem;
+    margin: 0 0 30px 0;
+    color: #f1c40f;
+    text-shadow: 0 0 20px rgba(241, 196, 15, 0.8);
+}
+
+.rule-intro {
+    font-size: 1.8rem;
+    color: #ecf0f1;
+    margin-bottom: 50px;
+    max-width: 600px;
+}
+
+.start-btn {
+    padding: 15px 50px;
+    font-size: 1.5rem;
+    font-weight: bold;
+    background: linear-gradient(135deg, #f1c40f, #f39c12);
+    border: none;
+    border-radius: 30px;
+    color: #2c3e50;
+    cursor: pointer;
+    transition: all 0.3s;
+    animation: pulse 2s infinite;
+}
+
+.start-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 30px rgba(241, 196, 15, 0.8);
+}
+
+/* Round Transition */
+.transition-overlay {
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.transition-content {
+    text-align: center;
+    animation: fadeInScale 0.3s ease;
+}
+
+.round-text {
+    font-size: 3rem;
+    margin: 0 0 20px 0;
+    color: #3498db;
+    text-shadow: 0 0 15px rgba(52, 152, 219, 0.8);
+}
+
+.continue-hint {
+    font-size: 1.2rem;
+    color: #bdc3c7;
+    opacity: 0.8;
+}
+
+@keyframes fadeInScale {
+    from {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+}
 </style>

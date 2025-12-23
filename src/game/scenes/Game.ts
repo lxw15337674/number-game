@@ -1,53 +1,89 @@
 import { EventBus } from '../EventBus';
 import { Scene } from 'phaser';
-import Phaser from 'phaser';
+import { LevelManager, LevelConfig, RoundConfig, ThemeConfig } from '../data/LevelManager';
+import { ComboManager } from '../data/ComboManager';
+import { PerkManager } from '../data/PerkManager';
 import { GameDataManager } from '../data/GameData';
-import { LevelManager, LevelConfig, ThemeConfig } from '../data/LevelManager';
+import { RuleFactory } from '../rules/RuleFactory';
+import { ChallengeData } from '../rules/RuleBase';
 
-export class Game extends Scene
-{
-    // Managers
-    dataManager: GameDataManager;
+/**
+ * 游戏主场景（完全重写版）
+ * 实现设计文档的核心机制：
+ * - 3回合/关结构
+ * - 全局倒计时
+ * - 连击系统
+ * - Perk系统集成
+ */
+export class Game extends Scene {
+    // 管理器
+    private comboManager: ComboManager;
+    private perkManager: PerkManager;
+    private dataManager: GameDataManager;
     
-    // Level State
-    currentLevel: number = 1;
-    levelConfig: LevelConfig;
-    bossHP: number = 0; // For Boss Battles (3 stages)
+    // 关卡状态
+    private currentLevel: number = 1;
+    private currentRound: number = 1;
+    private roundsCompleted: number = 0;
+    private levelConfig: LevelConfig;
+    private currentRoundConfig: RoundConfig;
+    private currentChallenge: ChallengeData;
     
-    // Gameplay Stats (Time Relay)
-    globalTime: number = 0;
-    energy: number = 0;
-    isFever: boolean = false;
-    feverTimer: number = 0;
-    isPlaying: boolean = false; // Controls input and timer
-
-    // Objects
-    gridGroup: Phaser.GameObjects.Group;
-    readyGroup: Phaser.GameObjects.Group; // For the "Get Ready" text
-    readyTimer: Phaser.Time.TimerEvent | null = null;
-    particleEmitter: Phaser.GameObjects.Particles.ParticleEmitter;
+    // 时间系统
+    private globalTime: number = 60;
+    private isPlaying: boolean = false;
     
-    // Perk modifiers
-    perkTimeThief: boolean = false;
-    perkEnergyMaster: boolean = false;
-    perkShieldActive: boolean = false;
-    usedShieldThisLevel: boolean = false;
-
-    constructor ()
-    {
+    // 本关统计
+    private mistakesThisLevel: number = 0;
+    private mistakesThisRound: number = 0;
+    
+    // UI对象
+    private gridGroup: Phaser.GameObjects.Group;
+    private uiTexts: {
+        time?: Phaser.GameObjects.Text;
+        level?: Phaser.GameObjects.Text;
+        round?: Phaser.GameObjects.Text;
+        combo?: Phaser.GameObjects.Text;
+        rule?: Phaser.GameObjects.Text;
+        coins?: Phaser.GameObjects.Text;
+        bossLabel?: Phaser.GameObjects.Text;
+    } = {};
+    private bossHealthBar?: {
+        bg: Phaser.GameObjects.Rectangle;
+        fill: Phaser.GameObjects.Rectangle;
+        container: Phaser.GameObjects.Container;
+    };
+    private feverOverlay?: Phaser.GameObjects.Rectangle;
+    
+    // 粒子效果
+    private particleEmitter: Phaser.GameObjects.Particles.ParticleEmitter;
+    
+    constructor() {
         super('Game');
     }
-
-    create ()
-    {
+    
+    create() {
+        // 初始化管理器
+        this.comboManager = ComboManager.getInstance();
+        this.perkManager = PerkManager.getInstance();
         this.dataManager = GameDataManager.getInstance();
         
-        // Initialize global relay time
-        this.globalTime = this.dataManager.getInitialTime();
-        this.energy = 0;
+        // 重置状态
+        this.comboManager.reset();
+        this.perkManager.reset();
+        
+        // 初始化时间（应用Perk加成）
+        const baseTime = 60;
+        const timeBonus = this.perkManager.getInitialTimeBonus();
+        this.globalTime = baseTime + timeBonus;
+        
+        // 初始化关卡
         this.currentLevel = 1;
-
-        // Particles
+        this.currentRound = 1;
+        this.roundsCompleted = 0;
+        this.mistakesThisLevel = 0;
+        
+        // 创建粒子系统
         this.particleEmitter = this.add.particles(0, 0, 'star', {
             lifespan: 800,
             speed: { min: 150, max: 350 },
@@ -56,509 +92,639 @@ export class Game extends Scene
             gravityY: 200,
             emitting: false
         });
-
-        this.readyGroup = this.add.group();
-
-        EventBus.on('restart-game', this.resetChallenge, this);
-        EventBus.on('apply-perk', this.applyPerk, this);
-
-        // Clean up listeners when scene is destroyed
+        
+        // 创建UI
+        this.createUI();
+        
+        // 监听Vue事件
+        EventBus.on('restart-game', this.restartGame, this);
+        EventBus.on('start-level', this.onStartLevel, this);
+        EventBus.on('next-round', this.onNextRound, this);
+        EventBus.on('data-updated', this.updateCoins, this);
         this.events.on('shutdown', this.shutdown, this);
-
-        this.startLevel();
-
+        
+        // 开始第一关
+        this.startLevel(this.currentLevel);
+        
         EventBus.emit('current-scene-ready', this);
     }
-
-    shutdown() {
-        EventBus.off('restart-game', this.resetChallenge, this);
-        EventBus.off('apply-perk', this.applyPerk, this);
-        if (this.readyTimer) this.readyTimer.remove();
-    }
-
-    update(time: number, delta: number)
-    {
-        if (!this.isPlaying) return; // Pause logic during "Get Ready"
-
+    
+    update(time: number, delta: number) {
+        if (!this.isPlaying) return;
+        
         const dt = delta / 1000;
-
-        // 1. Time Relay Logic
-        if (!this.isFever) {
-            this.globalTime -= dt;
-            if (this.globalTime <= 0) {
-                this.globalTime = 0;
-                this.handleGameOver();
-            }
-        } else {
-            // Fever timer
-            this.feverTimer -= dt;
-            if (this.feverTimer <= 0) {
-                this.stopFever();
-            }
-        }
-
-        // 2. Energy Decay
-        if (!this.isFever && this.energy > 0) {
-            this.energy -= 2 * dt; // -2 energy per second
-            if (this.energy < 0) this.energy = 0;
-        }
-
-        // Emit stats for HUD
-        EventBus.emit('update-hud', {
-            time: this.globalTime,
-            energy: this.energy,
-            level: this.currentLevel,
-            isFever: this.isFever,
-            bossHP: this.levelConfig.isBoss ? this.bossHP : null
-        });
-    }
-
-    resetChallenge() {
-        this.globalTime = this.dataManager.getInitialTime();
-        this.energy = 0;
-        this.currentLevel = 1;
-        this.startLevel();
-    }
-
-    startLevel() {
-        this.isPlaying = false;
-        this.levelConfig = LevelManager.getLevelConfig(this.currentLevel);
-        this.usedShieldThisLevel = false;
-
-        // Boss Logic
-        if (this.levelConfig.isBoss) {
-            this.bossHP = 3;
-        } else {
-            this.bossHP = 0;
-        }
-
-        this.applyTheme(this.levelConfig.theme);
         
-        // 1. Clear previous
-        if (this.gridGroup) this.gridGroup.clear(true, true);
-        this.readyGroup.clear(true, true);
-
-        // 2. Generate Data first
-        const { rows, cols } = this.levelConfig.gridSize;
-        const totalItems = rows * cols;
-        const levelData = this.generateLevelData(totalItems);
-
-        // 3. Show "Get Ready" Screen
-        const cx = this.scale.width / 2;
-        const cy = this.scale.height / 2;
-
-        const bg = this.add.rectangle(cx, cy, this.scale.width, 200, 0x000000, 0.8);
-        const titleText = this.add.text(cx, cy - 40, `第 ${this.currentLevel} 关`, { fontSize: '32px', color: '#f1c40f', fontStyle: 'bold' }).setOrigin(0.5);
-        const ruleText = this.add.text(cx, cy + 20, levelData.ruleText, { fontSize: '48px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
-        const skipHint = this.add.text(cx, cy + 70, '( 点击跳过 )', { fontSize: '18px', color: '#aaaaaa' }).setOrigin(0.5);
-        
-        this.readyGroup.add(bg);
-        this.readyGroup.add(titleText);
-        this.readyGroup.add(ruleText);
-        this.readyGroup.add(skipHint);
-
-        // Update HUD rule text as well
-        EventBus.emit('update-rule', levelData.ruleText);
-
-        const startFullLevel = () => {
-            if (this.readyTimer) this.readyTimer.remove();
-            this.input.off('pointerdown', startFullLevel);
-            this.readyGroup.clear(true, true);
-            this.buildGrid(levelData);
-            this.isPlaying = true;
-        };
-
-        // 4. Wait, then start (or click to skip)
-        this.input.once('pointerdown', startFullLevel);
-        this.readyTimer = this.time.delayedCall(2000, startFullLevel);
-    }
-
-    applyTheme(theme: ThemeConfig) {
-        if (!this.cameras || !this.cameras.main) return;
-        this.cameras.main.setBackgroundColor(theme.bgColor);
-    }
-
-    // --- Grid Generation ---
-
-    buildGrid(data: { content: any[], correctIndices: number[] }) {
-        this.gridGroup = this.add.group();
-
-        const { rows, cols } = this.levelConfig.gridSize;
-        const totalItems = rows * cols;
-
-        // 3. Render Grid (Fixed Spacing & Centered)
-        const FIXED_SPACING_X = 100;
-        const FIXED_SPACING_Y = 80;
-        
-        const gridWidth = (cols - 1) * FIXED_SPACING_X;
-        const gridHeight = (rows - 1) * FIXED_SPACING_Y;
-
-        // Center the whole grid on screen
-        const startX = (this.scale.width - gridWidth) / 2;
-        const startY = (this.scale.height - gridHeight) / 2 + 50; // Shifted down for HUD
-
-        let counter = 0;
-
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                if (counter >= totalItems) break;
-
-                const targetX = startX + c * FIXED_SPACING_X;
-                const targetY = startY + r * FIXED_SPACING_Y;
-                
-                const contentStr = data.content[counter].toString();
-                const fontSize = contentStr.length > 3 ? '22px' : '36px';
-
-                // Start at center, invisible
-                const text = this.add.text(this.scale.width / 2, this.scale.height / 2, contentStr, {
-                    fontFamily: 'Arial',
-                    fontSize: fontSize,
-                    color: '#ffffff',
-                    fontStyle: 'bold'
-                }).setOrigin(0.5).setInteractive();
-
-                text.setScale(0);
-                text.setAlpha(0);
-                
-                // Store metadata
-                text.setData('index', counter);
-                text.setData('isCorrect', data.correctIndices.includes(counter));
-                text.setData('targetX', targetX);
-                text.setData('targetY', targetY);
-
-                text.on('pointerdown', () => {
-                    if (this.isPlaying) this.handleItemClick(text);
-                });
-
-                text.on('pointerover', () => {
-                    if (this.isPlaying && this.selectedItem !== text) {
-                        text.setColor('#ffff00');
-                    }
-                });
-
-                text.on('pointerout', () => {
-                    if (this.isPlaying && this.selectedItem !== text) {
-                        text.setColor('#ffffff');
-                    }
-                });
-
-                this.gridGroup.add(text);
-                counter++;
-            }
-        }
-
-        // Entrance
-        this.tweens.add({
-            targets: this.gridGroup.getChildren(),
-            x: (t: any) => t.getData('targetX'),
-            y: (t: any) => t.getData('targetY'),
-            scale: 1,
-            alpha: 1,
-            duration: 500,
-            ease: 'Back.out'
-        });
-    }
-
-    // --- Gameplay Logic ---
-
-    selectedItem: any = null;
-
-    handleItemClick(text: Phaser.GameObjects.Text) {
-        const isCorrect = text.getData('isCorrect');
-        
-        if (this.levelConfig.mode === 'single') {
-            if (isCorrect) {
-                this.processCorrectHit(text);
-            } else {
-                this.processWrongHit(text);
-            }
-        } else {
-            // Pair Mode
-            if (this.selectedItem === text) {
-                text.setColor('#ffffff');
-                this.selectedItem = null;
-                return;
-            }
-            if (!this.selectedItem) {
-                this.selectedItem = text;
-                text.setColor('#00d2ff');
-                return;
-            }
-            
-            // Second item
-            const pairMatch = text.getData('isCorrect') && this.selectedItem.getData('isCorrect');
-            
-            if (pairMatch) {
-                this.processCorrectHit(this.selectedItem, text);
-            } else {
-                this.processWrongHit(text, this.selectedItem);
-            }
-            this.selectedItem = null;
-        }
-    }
-
-    processCorrectHit(...targets: Phaser.GameObjects.Text[]) {
-        this.isPlaying = false; // Lock input immediately to prevent double-click or mis-touch
-
-        targets.forEach(t => {
-            t.setColor('#00ff00');
-            this.particleEmitter.explode(20, t.x, t.y);
-        });
-
-        // Add Energy
-        this.addEnergy(10);
-
-        if (this.levelConfig.isBoss) {
-            this.bossHP--;
-            if (this.bossHP > 0) {
-                // Next stage of boss
-                this.time.delayedCall(500, () => {
-                    const { rows, cols } = this.levelConfig.gridSize;
-                    const newData = this.generateLevelData(rows * cols);
-                    
-                    // Update rule text just in case
-                    EventBus.emit('update-rule', newData.ruleText);
-                    
-                    this.gridGroup.clear(true, true);
-                    this.buildGrid(newData);
-                    this.isPlaying = true; // Re-enable input after boss stage transition
-                });
-                return;
-            }
-        }
-
-        // Win Level
-        this.winLevel();
-    }
-
-    processWrongHit(...targets: Phaser.GameObjects.Text[]) {
-        if (this.perkShieldActive && !this.usedShieldThisLevel) {
-            this.usedShieldThisLevel = true;
-            this.showFloatingText(targets[0].x, targets[0].y, 'SHIELDED', '#3498db');
+        // 全局倒计时
+        this.globalTime -= dt;
+        if (this.globalTime <= 0) {
+            this.globalTime = 0;
+            this.handleGameOver();
             return;
         }
-
-        // Penalty
-        const penalty = this.dataManager.getPenaltyTime();
-        this.globalTime -= penalty;
-        this.energy = Math.max(0, this.energy - 50);
-        this.cameras.main.shake(200, 0.01);
         
-        targets.forEach(t => {
-            t.setColor('#ff0000');
-            this.tweens.add({ targets: t, x: '+=5', yoyo: true, repeat: 3, duration: 50 });
-        });
-
-        this.showFloatingText(targets[0].x, targets[0].y, `-${penalty}s`, '#ff0000');
+        // 更新UI
+        this.updateUI();
     }
-
-    addEnergy(amount: number) {
-        if (this.isFever) return;
+    
+    shutdown() {
+        EventBus.off('restart-game', this.restartGame, this);
+        EventBus.off('start-level', this.onStartLevel, this);
+        EventBus.off('next-round', this.onNextRound, this);
+        EventBus.off('data-updated', this.updateCoins, this);
+    }
+    
+    /**
+     * 创建UI
+     */
+    private createUI() {
+        const { width, height } = this.scale;
         
-        const mult = this.perkEnergyMaster ? 1.5 : 1.0;
-        this.energy += amount * mult;
+        // 时间显示
+        this.uiTexts.time = this.add.text(width / 2, 30, '', {
+            fontSize: '32px',
+            color: '#ffffff',
+            fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(100);
         
-        if (this.energy >= 100) {
-            this.energy = 100;
-            this.startFever();
+        // 关卡和回合显示
+        this.uiTexts.level = this.add.text(50, 30, '', {
+            fontSize: '24px',
+            color: '#ffffff'
+        }).setOrigin(0, 0.5).setDepth(100);
+        
+        this.uiTexts.round = this.add.text(50, 60, '', {
+            fontSize: '20px',
+            color: '#aaaaaa'
+        }).setOrigin(0, 0.5).setDepth(100);
+        
+        // 金币显示（左上角，回合下方）
+        this.uiTexts.coins = this.add.text(50, 90, '', {
+            fontSize: '22px',
+            color: '#f1c40f',
+            fontStyle: 'bold'
+        }).setOrigin(0, 0.5).setDepth(100);
+        
+        // 连击显示
+        this.uiTexts.combo = this.add.text(width - 50, 30, '', {
+            fontSize: '28px',
+            color: '#ffaa00',
+            fontStyle: 'bold'
+        }).setOrigin(1, 0.5).setDepth(100);
+        
+        // 规则显示
+        this.uiTexts.rule = this.add.text(width / 2, 100, '', {
+            fontSize: '36px',
+            color: '#00ffff',
+            fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(100);
+        
+        // Fever覆盖层（金色半透明）
+        this.feverOverlay = this.add.rectangle(width / 2, height / 2, width, height, 0xf1c40f, 0)
+            .setDepth(5)
+            .setBlendMode(Phaser.BlendModes.ADD);
+    }
+    
+    /**
+     * 更新UI显示
+     */
+    private updateUI() {
+        // 发送HUD数据到Vue层（用于Modal显示）
+        const combo = this.comboManager.getCombo();
+        const isFever = combo >= 30;
+        
+        EventBus.emit('update-hud', {
+            time: this.globalTime,
+            energy: 0,
+            level: this.currentLevel,
+            round: this.currentRound,
+            isFever: isFever,
+            bossHP: this.levelConfig.isBoss ? (3 - this.roundsCompleted) : null
+        });
+        
+        // Fever特效（覆盖层闪烁）
+        if (isFever) {
+            // 显示金色覆盖层，使用脉冲动画
+            if (this.feverOverlay && this.feverOverlay.alpha === 0) {
+                this.tweens.add({
+                    targets: this.feverOverlay,
+                    alpha: { from: 0, to: 0.15 },
+                    duration: 300,
+                    yoyo: true,
+                    repeat: -1
+                });
+            }
+        } else {
+            // 隐藏Fever覆盖层
+            if (this.feverOverlay) {
+                this.tweens.killTweensOf(this.feverOverlay);
+                this.feverOverlay.setAlpha(0);
+            }
+        }
+        
+        // 时间显示（低于10秒变红）
+        const timeText = `⏱ ${Math.ceil(this.globalTime)}秒`;
+        const timeColor = this.globalTime < 10 ? '#ff0000' : '#ffffff';
+        this.uiTexts.time?.setText(timeText).setColor(timeColor);
+        
+        // 关卡显示
+        this.uiTexts.level?.setText(`关卡 ${this.currentLevel}`);
+        
+        // 回合显示
+        this.uiTexts.round?.setText(`回合 ${this.currentRound}/3`);
+        
+        // 金币显示
+        this.uiTexts.coins?.setText(`🪙 ${this.dataManager.coins}`);
+        
+        // 连击显示
+        if (combo > 0) {
+            this.uiTexts.combo?.setText(`🔥 ${combo} 连击!`).setVisible(true);
+        } else {
+            this.uiTexts.combo?.setVisible(false);
+        }
+        
+        // Boss血条更新
+        if (this.levelConfig.isBoss && this.bossHealthBar) {
+            const progress = this.roundsCompleted / 3;
+            const barWidth = 300;
+            this.bossHealthBar.fill.width = barWidth * (1 - progress);
         }
     }
-
-    startFever() {
-        this.isFever = true;
-        this.feverTimer = 8; // 8 seconds
-        this.cameras.main.flash(500, 255, 215, 0);
+    
+    /**
+     * 更新金币显示（响应data-updated事件）
+     */
+    private updateCoins = () => {
+        this.uiTexts.coins?.setText(`🪙 ${this.dataManager.coins}`);
     }
-
-    stopFever() {
-        this.isFever = false;
-        this.energy = 0;
+    
+    /**
+     * 开始新关卡
+     */
+    private startLevel(level: number) {
+        this.currentLevel = level;
+        this.currentRound = 1;
+        this.roundsCompleted = 0;
+        this.mistakesThisLevel = 0;
+        
+        // 获取关卡配置
+        this.levelConfig = LevelManager.getLevelConfig(level);
+        
+        // 应用主题
+        this.applyTheme(this.levelConfig.theme);
+        
+        // 创建或隐藏Boss UI
+        if (this.levelConfig.isBoss) {
+            this.createBossUI();
+        } else {
+            this.hideBossUI();
+        }
+        
+        // 显示关卡开始动画
+        this.showLevelStart();
     }
-
-    winLevel() {
-        // Bonus Time
-        let bonus = this.levelConfig.bonusTime;
-        if (this.perkTimeThief) bonus += 1;
-        this.globalTime += bonus;
-
-        // Coins
-        const baseCoins = this.levelConfig.isBoss ? 50 : 10;
-        const mult = this.dataManager.getCoinMultiplier();
-        const finalCoins = Math.floor(baseCoins * mult * (this.isFever ? 2 : 1));
-        this.dataManager.addCoins(finalCoins);
-
-        this.showFloatingText(this.scale.width/2, this.scale.height/2, `+${bonus}s`, '#00ff00');
-
-        this.time.delayedCall(800, () => {
-            if (this.currentLevel % 5 === 0) {
-                // Trigger Perk Selection every 5 levels
-                EventBus.emit('show-perks');
-            } else {
-                this.nextLevel();
-            }
+    
+    /**
+     * 显示关卡开始 - 发送事件给Vue层
+     */
+    private showLevelStart() {
+        this.isPlaying = false;
+        
+        // 生成规则文本
+        const round1 = this.levelConfig.rounds[0];
+        const ruleText = round1.ruleText;
+        
+        // 发送关卡介绍事件给Vue
+        EventBus.emit('level-intro', {
+            level: this.currentLevel,
+            isBoss: this.levelConfig.isBoss,
+            ruleText: ruleText
         });
+        
+        // Boss特效
+        if (this.levelConfig.isBoss) {
+            this.cameras.main.shake(300, 0.01);
+        }
     }
-
-    nextLevel() {
-        this.currentLevel++;
-        this.startLevel();
+    
+    /**
+     * Vue通知：用户点击开始关卡
+     */
+    private onStartLevel = () => {
+        this.initRound(1);
     }
-
-    handleGameOver() {
-        this.dataManager.updateMaxLevel(this.currentLevel);
-        EventBus.emit('game-over', { level: this.currentLevel });
-        this.scene.pause();
+    
+    /**
+     * Vue通知：用户点击进入下一回合
+     */
+    private onNextRound = () => {
+        this.initRound(this.currentRound);
     }
-
-    // --- Helpers ---
-
-    showFloatingText(x: number, y: number, msg: string, col: string) {
-        const t = this.add.text(x, y, msg, { font: 'bold 32px Arial', color: col }).setOrigin(0.5);
-        this.tweens.add({ targets: t, y: y - 100, alpha: 0, duration: 800, onComplete: () => t.destroy() });
+    
+    /**
+     * 初始化回合
+     */
+    private initRound(roundNumber: number) {
+        this.currentRound = roundNumber;
+        this.mistakesThisRound = 0;
+        
+        // 获取回合配置
+        this.currentRoundConfig = this.levelConfig.rounds[roundNumber - 1];
+        
+        // 获取Perk隐藏选项数
+        const hideWrongCount = this.perkManager.getHideWrongCount();
+        
+        // 使用规则工厂生成挑战
+        this.currentChallenge = RuleFactory.generateChallenge(this.currentRoundConfig, hideWrongCount);
+        
+        // 更新规则显示
+        this.uiTexts.rule?.setText(this.currentChallenge.ruleText);
+        
+        // 构建网格
+        this.buildGrid();
+        
+        // 开始游戏
+        this.isPlaying = true;
     }
-
-    generateLevelData(count: number) {
-        const rule = this.levelConfig.rule;
-        const mode = this.levelConfig.mode;
-        let content: (string | number)[] = [];
-        let correctIndices: number[] = [];
-        let ruleText = '';
-
-        // Helper to get random unique indices
-        const getIndices = (n: number) => {
-            const arr: number[] = [];
-            while(arr.length < n) {
-                const r = Phaser.Math.Between(0, count - 1);
-                if(!arr.includes(r)) arr.push(r);
-            }
-            return arr;
-        };
-
-        const prefix = this.levelConfig.isBoss ? 'BOSS: ' : '';
-
-        if (mode === 'single') {
-            correctIndices = getIndices(1);
-            
-            if (rule === 'max') {
-                ruleText = prefix + '找出最大的数字';
-                const maxVal = Phaser.Math.Between(800, 999);
-                for(let i=0; i<count; i++) {
-                    content.push(correctIndices.includes(i) ? maxVal : Phaser.Math.Between(10, maxVal - 50));
-                }
-            } 
-            else if (rule === 'min') {
-                ruleText = prefix + '找出最小的数字';
-                const minVal = Phaser.Math.Between(1, 50);
-                for(let i=0; i<count; i++) {
-                    content.push(correctIndices.includes(i) ? minVal : Phaser.Math.Between(minVal + 50, 999));
-                }
-            }
-            else if (rule === 'odd') {
-                ruleText = prefix + '找出唯一的奇数';
-                for(let i=0; i<count; i++) {
-                    let n = Phaser.Math.Between(10, 99);
-                    if (correctIndices.includes(i)) {
-                        if (n % 2 === 0) n++;
-                    } else {
-                        if (n % 2 !== 0) n++;
-                    }
-                    content.push(n);
-                }
-            }
-            else if (rule === 'even') {
-                ruleText = prefix + '找出唯一的偶数';
-                for(let i=0; i<count; i++) {
-                    let n = Phaser.Math.Between(10, 99);
-                    if (correctIndices.includes(i)) {
-                        if (n % 2 !== 0) n++;
-                    } else {
-                        if (n % 2 === 0) n++;
-                    }
-                    content.push(n);
-                }
-            }
-            else if (rule.startsWith('equation')) {
-                const isAdd = rule === 'equation_add';
-                const target = Phaser.Math.Between(10, 30);
+    
+    /**
+     * 构建网格
+     */
+    private buildGrid() {
+        // 清除旧网格
+        if (this.gridGroup) {
+            this.gridGroup.clear(true, true);
+        }
+        
+        this.gridGroup = this.add.group();
+        
+        const { rows, cols } = this.currentRoundConfig.gridSize;
+        const { items, correctIndices } = this.currentChallenge;
+        
+        // 计算网格布局
+        const cellSize = 80;
+        const spacing = 10;
+        const gridWidth = cols * (cellSize + spacing) - spacing;
+        const gridHeight = rows * (cellSize + spacing) - spacing;
+        
+        const startX = (this.scale.width - gridWidth) / 2;
+        const startY = (this.scale.height - gridHeight) / 2 + 50;
+        
+        // 创建网格单元
+        let index = 0;
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+                if (index >= items.length) break;
                 
-                ruleText = prefix + `找出结果为 ${target} 的算式`;
-
-                for(let i=0; i<count; i++) {
-                    if (correctIndices.includes(i)) {
-                        // Correct equation
-                        if (isAdd) {
-                            const a = Phaser.Math.Between(1, target-1);
-                            content.push(`${a} + ${target-a}`);
-                        } else {
-                            const b = Phaser.Math.Between(1, 10);
-                            content.push(`${target+b} - ${b}`);
-                        }
-                    } else {
-                        // Wrong equation
-                        let res = target;
-                        while(res === target) res = Phaser.Math.Between(5, 40);
-                        
-                        if (isAdd) {
-                            const a = Phaser.Math.Between(1, res > 1 ? res-1 : 1);
-                            content.push(`${a} + ${res-a}`);
-                        } else {
-                            const b = Phaser.Math.Between(1, 10);
-                            content.push(`${res+b} - ${b}`);
-                        }
-                    }
-                }
-            }
-        } 
-        else if (mode === 'pair') {
-            correctIndices = getIndices(2);
-            // Fill with placeholders first
-            content = Array(count).fill(0);
-
-            if (rule === 'pair_sum') {
-                const target = Phaser.Math.Between(20, 50);
-                ruleText = prefix + `找出相加为 ${target} 的两数`;
-
-                const val1 = Phaser.Math.Between(1, target-1);
-                content[correctIndices[0]] = val1;
-                content[correctIndices[1]] = target - val1;
-
-                // Fill distractors
-                for(let i=0; i<count; i++) {
-                    if (!correctIndices.includes(i)) {
-                        content[i] = Phaser.Math.Between(1, target + 20);
-                    }
-                }
-            }
-            else if (rule === 'pair_product') {
-                const a = Phaser.Math.Between(2, 9);
-                const b = Phaser.Math.Between(2, 9);
-                const target = a * b;
-                ruleText = prefix + `找出相乘为 ${target} 的两数`;
-
-                content[correctIndices[0]] = a;
-                content[correctIndices[1]] = b;
-
-                for(let i=0; i<count; i++) {
-                    if (!correctIndices.includes(i)) {
-                        content[i] = Phaser.Math.Between(1, 81);
-                    }
-                }
+                const x = startX + col * (cellSize + spacing);
+                const y = startY + row * (cellSize + spacing);
+                const value = items[index];
+                const isCorrect = correctIndices.includes(index);
+                
+                this.createGridCell(x, y, cellSize, value, isCorrect, index);
+                index++;
             }
         }
-
-        return { content, correctIndices, ruleText };
-    }
-
-    getCorrectIndices() { return this.levelConfig.isBoss ? [0] : [0]; } // Simplified logic, actual indices are stored in text data
-
-    applyPerk(perkId: string) {
-        if (!this.scene || !this.sys || !this.sys.isActive()) return;
-
-        if (perkId === 'time_thief') this.perkTimeThief = true;
-        if (perkId === 'energy_master') this.perkEnergyMaster = true;
-        if (perkId === 'shield') this.perkShieldActive = true;
         
-        // Resume game
-        this.nextLevel();
+        // 确保网格可见
+        this.gridGroup.setVisible(true);
+    }
+    
+    /**
+     * 创建网格单元
+     */
+    private createGridCell(
+        x: number, 
+        y: number, 
+        size: number, 
+        value: number | string, 
+        isCorrect: boolean,
+        index: number
+    ) {
+        // 背景
+        const bg = this.add.rectangle(x, y, size, size, 0x1a1a2e)
+            .setStrokeStyle(2, 0x16213e)
+            .setInteractive({ useHandCursor: true })
+            .setOrigin(0);
+        
+        // 文本（支持数字和字符串）
+        const displayText = typeof value === 'string' ? value : value.toString();
+        const fontSize = typeof value === 'string' ? '20px' : '28px';  // 算式用较小字体
+        
+        const text = this.add.text(x + size / 2, y + size / 2, displayText, {
+            fontSize: fontSize,
+            color: '#ffffff',
+            fontStyle: 'bold'
+        }).setOrigin(0.5);
+        
+        // 点击事件
+        bg.on('pointerover', () => {
+            bg.setFillStyle(0x2a2a4e);
+        });
+        
+        bg.on('pointerout', () => {
+            bg.setFillStyle(0x1a1a2e);
+        });
+        
+        bg.on('pointerdown', () => {
+            this.handleCellClick(isCorrect, index, bg, text);
+        });
+        
+        this.gridGroup.add(bg);
+        this.gridGroup.add(text);
+    }
+    
+    /**
+     * 处理单元格点击
+     */
+    private handleCellClick(
+        isCorrect: boolean,
+        cellIndex: number,
+        bg: Phaser.GameObjects.Rectangle,
+        text: Phaser.GameObjects.Text
+    ) {
+        if (!this.isPlaying) return;
+        
+        // 使用规则工厂检查答案（简化版，后续可扩展为支持序列模式）
+        if (isCorrect) {
+            this.handleCorrectAnswer(bg, text);
+        } else {
+            this.handleWrongAnswer(bg, text);
+        }
+    }
+    
+    /**
+     * 处理正确答案
+     */
+    private handleCorrectAnswer(
+        bg: Phaser.GameObjects.Rectangle,
+        text: Phaser.GameObjects.Text
+    ) {
+        // 增加连击
+        this.comboManager.addCombo();
+        
+        // 视觉反馈
+        bg.setFillStyle(0x00ff00);
+        this.playSuccessEffect(bg.x + bg.width / 2, bg.y + bg.height / 2);
+        
+        // 声音（如果有）
+        // this.sound.play('success');
+        
+        // 暂停游戏
+        this.isPlaying = false;
+        
+        // 延迟后进入下一回合
+        this.time.delayedCall(500, () => {
+            this.onRoundComplete();
+        });
+    }
+    
+    /**
+     * 处理错误答案
+     */
+    private handleWrongAnswer(
+        bg: Phaser.GameObjects.Rectangle,
+        text: Phaser.GameObjects.Text
+    ) {
+        // 检查护盾
+        if (this.perkManager.canUseShield()) {
+            this.perkManager.useShield();
+            // 显示护盾效果
+            bg.setFillStyle(0xffaa00);
+            this.cameras.main.flash(100, 255, 255, 0);
+            return;
+        }
+        
+        // 扣除时间
+        this.globalTime -= 5;
+        this.mistakesThisLevel++;
+        this.mistakesThisRound++;
+        
+        // 重置连击
+        this.comboManager.resetCombo();
+        
+        // 视觉反馈
+        bg.setFillStyle(0xff0000);
+        this.cameras.main.shake(200, 0.005);
+        
+        // 显示-5秒
+        this.showTimeDecrement(bg.x + bg.width / 2, bg.y);
+        
+        // 恢复颜色
+        this.time.delayedCall(300, () => {
+            bg.setFillStyle(0x1a1a2e);
+        });
+    }
+    
+    /**
+     * 回合完成
+     */
+    private onRoundComplete() {
+        this.roundsCompleted++;
+        
+        if (this.roundsCompleted >= 3) {
+            // 3回合完成，关卡完成
+            this.onLevelComplete();
+        } else {
+            // 进入下一回合
+            this.playRoundTransition(this.roundsCompleted + 1);
+        }
+    }
+    
+    /**
+     * 播放回合过渡 - 发送事件给Vue层
+     */
+    private playRoundTransition(nextRound: number) {
+        // 暂停游戏
+        this.isPlaying = false;
+        
+        // 保存下一回合数
+        this.currentRound = nextRound;
+        
+        // 发送回合过渡事件给Vue
+        EventBus.emit('round-transition', {
+            round: nextRound,
+            total: 3
+        });
+    }
+    
+    /**
+     * 关卡完成
+     */
+    private onLevelComplete() {
+        this.isPlaying = false;
+        
+        // 时间奖励
+        this.globalTime += this.levelConfig.bonusTime;
+        
+        // Perk奖励
+        const isPerfect = this.mistakesThisLevel === 0;
+        const perkRewards = this.perkManager.onLevelEnd(isPerfect);
+        this.globalTime += perkRewards.timeBonus;
+        
+        // 显示完成动画
+        this.showLevelComplete();
+    }
+    
+    /**
+     * 显示关卡完成动画
+     */
+    private showLevelComplete() {
+        const { width, height } = this.scale;
+        
+        const overlay = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7)
+            .setDepth(200);
+        
+        const text = this.add.text(width / 2, height / 2, '✓ 关卡完成!\n+10秒', {
+            fontSize: '42px',
+            color: '#00ff00',
+            fontStyle: 'bold',
+            align: 'center'
+        }).setOrigin(0.5).setDepth(201);
+        
+        // 特效
+        this.cameras.main.flash(200, 0, 255, 0, false);
+        
+        // 延迟后进入下一关或Boss奖励
+        this.time.delayedCall(1500, () => {
+            overlay.destroy();
+            text.destroy();
+            
+            if (this.levelConfig.isBoss) {
+                // Boss关卡，显示Perk选择（Phase 3实现）
+                this.showPerkSelection();
+            } else {
+                // 进入下一关
+                this.startLevel(this.currentLevel + 1);
+            }
+        });
+    }
+    
+    /**
+     * 显示Perk选择
+     */
+    private showPerkSelection() {
+        // 暂停当前场景
+        this.scene.pause();
+        
+        // 启动Perk选择场景
+        this.scene.launch('PerkSelection', { fromLevel: this.currentLevel });
+        
+        // 监听Perk选择完成
+        EventBus.once('perk-selected', () => {
+            // 继续下一关
+            this.startLevel(this.currentLevel + 1);
+        });
+    }
+    
+    /**
+     * 游戏结束
+     */
+    private handleGameOver() {
+        this.isPlaying = false;
+        
+        // 发送游戏结束事件
+        EventBus.emit('game-over', {
+            level: this.currentLevel,
+            maxCombo: this.comboManager.getMaxCombo(),
+            timeLeft: 0
+        });
+        
+        // 切换到GameOver场景
+        this.scene.start('GameOver');
+    }
+    
+    /**
+     * 重新开始游戏
+     */
+    private restartGame() {
+        this.scene.restart();
+    }
+    
+    /**
+     * 应用主题
+     */
+    private applyTheme(theme: ThemeConfig) {
+        this.cameras.main.setBackgroundColor(theme.bgColor);
+    }
+    
+    /**
+     * 创建Boss UI
+     */
+    private createBossUI() {
+        const { width } = this.scale;
+        
+        // 如果已存在，先显示
+        if (this.bossHealthBar) {
+            this.bossHealthBar.container.setVisible(true);
+            this.bossHealthBar.fill.width = 300;  // 重置血条
+            this.uiTexts.bossLabel?.setVisible(true);
+            return;
+        }
+        
+        const barWidth = 300;
+        const barHeight = 20;
+        const barX = width / 2 - barWidth / 2;
+        const barY = 140;
+        
+        const container = this.add.container(0, 0).setDepth(100);
+        
+        // Boss标签
+        this.uiTexts.bossLabel = this.add.text(width / 2, barY - 30, '⚔️ BOSS ⚔️', {
+            fontSize: '24px',
+            color: '#ff0000',
+            fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(100);
+        
+        // 血条背景
+        const bg = this.add.rectangle(barX, barY, barWidth, barHeight, 0x333333)
+            .setOrigin(0)
+            .setStrokeStyle(2, 0xff0000);
+        
+        // 血条填充
+        const fill = this.add.rectangle(barX, barY, barWidth, barHeight, 0xff0000)
+            .setOrigin(0);
+        
+        container.add([bg, fill]);
+        
+        this.bossHealthBar = { bg, fill, container };
+    }
+    
+    /**
+     * 隐藏Boss UI
+     */
+    private hideBossUI() {
+        if (this.bossHealthBar) {
+            this.bossHealthBar.container.setVisible(false);
+        }
+        if (this.uiTexts.bossLabel) {
+            this.uiTexts.bossLabel.setVisible(false);
+        }
+    }
+    
+    /**
+     * 播放成功特效
+     */
+    private playSuccessEffect(x: number, y: number) {
+        this.particleEmitter.setPosition(x, y);
+        this.particleEmitter.explode(20);
+    }
+    
+    /**
+     * 显示时间减少动画
+     */
+    private showTimeDecrement(x: number, y: number) {
+        const text = this.add.text(x, y, '-5秒', {
+            fontSize: '32px',
+            color: '#ff0000',
+            fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(300);
+        
+        this.tweens.add({
+            targets: text,
+            y: y - 50,
+            alpha: 0,
+            duration: 1000,
+            onComplete: () => text.destroy()
+        });
     }
 }
