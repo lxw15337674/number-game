@@ -39,21 +39,6 @@ export class Game extends Scene {
     
     // UI对象
     private gridGroup: Phaser.GameObjects.Group;
-    private uiTexts: {
-        time?: Phaser.GameObjects.Text;
-        level?: Phaser.GameObjects.Text;
-        round?: Phaser.GameObjects.Text;
-        combo?: Phaser.GameObjects.Text;
-        rule?: Phaser.GameObjects.Text;
-        coins?: Phaser.GameObjects.Text;
-        bossLabel?: Phaser.GameObjects.Text;
-    } = {};
-    private bossHealthBar?: {
-        bg: Phaser.GameObjects.Rectangle;
-        fill: Phaser.GameObjects.Rectangle;
-        container: Phaser.GameObjects.Container;
-    };
-    private feverOverlay?: Phaser.GameObjects.Rectangle;
     
     // 粒子效果
     private particleEmitter: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -92,15 +77,12 @@ export class Game extends Scene {
             gravityY: 200,
             emitting: false
         });
-        
-        // 创建UI
-        this.createUI();
+        this.particleEmitter.setDepth(50);
         
         // 监听Vue事件
         EventBus.on('restart-game', this.restartGame, this);
         EventBus.on('start-level', this.onStartLevel, this);
         EventBus.on('next-round', this.onNextRound, this);
-        EventBus.on('data-updated', this.updateCoins, this);
         this.events.on('shutdown', this.shutdown, this);
         
         // 开始第一关
@@ -130,131 +112,24 @@ export class Game extends Scene {
         EventBus.off('restart-game', this.restartGame, this);
         EventBus.off('start-level', this.onStartLevel, this);
         EventBus.off('next-round', this.onNextRound, this);
-        EventBus.off('data-updated', this.updateCoins, this);
-    }
-    
-    /**
-     * 创建UI
-     */
-    private createUI() {
-        const { width, height } = this.scale;
-        
-        // 时间显示
-        this.uiTexts.time = this.add.text(width / 2, 30, '', {
-            fontSize: '32px',
-            color: '#ffffff',
-            fontStyle: 'bold'
-        }).setOrigin(0.5).setDepth(100);
-        
-        // 关卡和回合显示
-        this.uiTexts.level = this.add.text(50, 30, '', {
-            fontSize: '24px',
-            color: '#ffffff'
-        }).setOrigin(0, 0.5).setDepth(100);
-        
-        this.uiTexts.round = this.add.text(50, 60, '', {
-            fontSize: '20px',
-            color: '#aaaaaa'
-        }).setOrigin(0, 0.5).setDepth(100);
-        
-        // 金币显示（左上角，回合下方）
-        this.uiTexts.coins = this.add.text(50, 90, '', {
-            fontSize: '22px',
-            color: '#f1c40f',
-            fontStyle: 'bold'
-        }).setOrigin(0, 0.5).setDepth(100);
-        
-        // 连击显示
-        this.uiTexts.combo = this.add.text(width - 50, 30, '', {
-            fontSize: '28px',
-            color: '#ffaa00',
-            fontStyle: 'bold'
-        }).setOrigin(1, 0.5).setDepth(100);
-        
-        // 规则显示
-        this.uiTexts.rule = this.add.text(width / 2, 100, '', {
-            fontSize: '36px',
-            color: '#00ffff',
-            fontStyle: 'bold'
-        }).setOrigin(0.5).setDepth(100);
-        
-        // Fever覆盖层（金色半透明）
-        this.feverOverlay = this.add.rectangle(width / 2, height / 2, width, height, 0xf1c40f, 0)
-            .setDepth(5)
-            .setBlendMode(Phaser.BlendModes.ADD);
     }
     
     /**
      * 更新UI显示
      */
     private updateUI() {
-        // 发送HUD数据到Vue层（用于Modal显示）
+        // 发送HUD数据到Vue层
         const combo = this.comboManager.getCombo();
         const isFever = combo >= 30;
-        
+
         EventBus.emit('update-hud', {
             time: this.globalTime,
-            energy: 0,
+            combo: combo,
             level: this.currentLevel,
             round: this.currentRound,
             isFever: isFever,
             bossHP: this.levelConfig.isBoss ? (3 - this.roundsCompleted) : null
         });
-        
-        // Fever特效（覆盖层闪烁）
-        if (isFever) {
-            // 显示金色覆盖层，使用脉冲动画
-            if (this.feverOverlay && this.feverOverlay.alpha === 0) {
-                this.tweens.add({
-                    targets: this.feverOverlay,
-                    alpha: { from: 0, to: 0.15 },
-                    duration: 300,
-                    yoyo: true,
-                    repeat: -1
-                });
-            }
-        } else {
-            // 隐藏Fever覆盖层
-            if (this.feverOverlay) {
-                this.tweens.killTweensOf(this.feverOverlay);
-                this.feverOverlay.setAlpha(0);
-            }
-        }
-        
-        // 时间显示（低于10秒变红）
-        const timeText = `⏱ ${Math.ceil(this.globalTime)}秒`;
-        const timeColor = this.globalTime < 10 ? '#ff0000' : '#ffffff';
-        this.uiTexts.time?.setText(timeText).setColor(timeColor);
-        
-        // 关卡显示
-        this.uiTexts.level?.setText(`关卡 ${this.currentLevel}`);
-        
-        // 回合显示
-        this.uiTexts.round?.setText(`回合 ${this.currentRound}/3`);
-        
-        // 金币显示
-        this.uiTexts.coins?.setText(`🪙 ${this.dataManager.coins}`);
-        
-        // 连击显示
-        if (combo > 0) {
-            this.uiTexts.combo?.setText(`🔥 ${combo} 连击!`).setVisible(true);
-        } else {
-            this.uiTexts.combo?.setVisible(false);
-        }
-        
-        // Boss血条更新
-        if (this.levelConfig.isBoss && this.bossHealthBar) {
-            const progress = this.roundsCompleted / 3;
-            const barWidth = 300;
-            this.bossHealthBar.fill.width = barWidth * (1 - progress);
-        }
-    }
-    
-    /**
-     * 更新金币显示（响应data-updated事件）
-     */
-    private updateCoins = () => {
-        this.uiTexts.coins?.setText(`🪙 ${this.dataManager.coins}`);
     }
     
     /**
@@ -265,20 +140,13 @@ export class Game extends Scene {
         this.currentRound = 1;
         this.roundsCompleted = 0;
         this.mistakesThisLevel = 0;
-        
+
         // 获取关卡配置
         this.levelConfig = LevelManager.getLevelConfig(level);
-        
+
         // 应用主题
         this.applyTheme(this.levelConfig.theme);
-        
-        // 创建或隐藏Boss UI
-        if (this.levelConfig.isBoss) {
-            this.createBossUI();
-        } else {
-            this.hideBossUI();
-        }
-        
+
         // 显示关卡开始动画
         this.showLevelStart();
     }
@@ -326,22 +194,22 @@ export class Game extends Scene {
     private initRound(roundNumber: number) {
         this.currentRound = roundNumber;
         this.mistakesThisRound = 0;
-        
+
         // 获取回合配置
         this.currentRoundConfig = this.levelConfig.rounds[roundNumber - 1];
-        
+
         // 获取Perk隐藏选项数
         const hideWrongCount = this.perkManager.getHideWrongCount();
-        
+
         // 使用规则工厂生成挑战
         this.currentChallenge = RuleFactory.generateChallenge(this.currentRoundConfig, hideWrongCount);
-        
-        // 更新规则显示
-        this.uiTexts.rule?.setText(this.currentChallenge.ruleText);
-        
+
+        // 发送规则文字到Vue层
+        EventBus.emit('update-rule', this.currentChallenge.ruleText);
+
         // 构建网格
         this.buildGrid();
-        
+
         // 开始游戏
         this.isPlaying = true;
     }
@@ -646,61 +514,7 @@ export class Game extends Scene {
     private applyTheme(theme: ThemeConfig) {
         this.cameras.main.setBackgroundColor(theme.bgColor);
     }
-    
-    /**
-     * 创建Boss UI
-     */
-    private createBossUI() {
-        const { width } = this.scale;
-        
-        // 如果已存在，先显示
-        if (this.bossHealthBar) {
-            this.bossHealthBar.container.setVisible(true);
-            this.bossHealthBar.fill.width = 300;  // 重置血条
-            this.uiTexts.bossLabel?.setVisible(true);
-            return;
-        }
-        
-        const barWidth = 300;
-        const barHeight = 20;
-        const barX = width / 2 - barWidth / 2;
-        const barY = 140;
-        
-        const container = this.add.container(0, 0).setDepth(100);
-        
-        // Boss标签
-        this.uiTexts.bossLabel = this.add.text(width / 2, barY - 30, '⚔️ BOSS ⚔️', {
-            fontSize: '24px',
-            color: '#ff0000',
-            fontStyle: 'bold'
-        }).setOrigin(0.5).setDepth(100);
-        
-        // 血条背景
-        const bg = this.add.rectangle(barX, barY, barWidth, barHeight, 0x333333)
-            .setOrigin(0)
-            .setStrokeStyle(2, 0xff0000);
-        
-        // 血条填充
-        const fill = this.add.rectangle(barX, barY, barWidth, barHeight, 0xff0000)
-            .setOrigin(0);
-        
-        container.add([bg, fill]);
-        
-        this.bossHealthBar = { bg, fill, container };
-    }
-    
-    /**
-     * 隐藏Boss UI
-     */
-    private hideBossUI() {
-        if (this.bossHealthBar) {
-            this.bossHealthBar.container.setVisible(false);
-        }
-        if (this.uiTexts.bossLabel) {
-            this.uiTexts.bossLabel.setVisible(false);
-        }
-    }
-    
+
     /**
      * 播放成功特效
      */

@@ -7,9 +7,23 @@ import { GameDataManager } from './game/data/GameData';
 // State
 const phaserRef = ref();
 const dataManager = GameDataManager.getInstance();
-const userCoins = ref(dataManager.coins);
 
-// UI State
+// HUD Data (restored)
+const globalTime = ref(60);
+const maxTime = ref(60);
+const combo = ref(0);
+const currentLevel = ref(1);
+const currentRound = ref(1);
+const isFever = ref(false);
+const bossHP = ref<number | null>(null);
+const userCoins = ref(dataManager.coins);
+const currentRuleText = ref('');
+
+// Computed
+const timePercent = computed(() => Math.max(0, (globalTime.value / maxTime.value) * 100));
+const isTimeLow = computed(() => globalTime.value <= 10);
+
+// UI State (new features - kept)
 const showLevelIntro = ref(false);
 const showRoundTransition = ref(false);
 const levelIntroData = ref({ level: 1, isBoss: false, ruleText: '' });
@@ -73,6 +87,7 @@ const closeShop = () => {
     EventBus.emit('restart-game');
 };
 
+// New feature handlers (kept)
 const startLevel = () => {
     showLevelIntro.value = false;
     EventBus.emit('start-level');
@@ -96,10 +111,29 @@ const restartGame = () => {
 onMounted(() => {
     refreshShopData();
 
+    // Data updated
     EventBus.on('data-updated', () => {
         userCoins.value = dataManager.coins;
     });
 
+    // HUD updates (restored)
+    EventBus.on('update-hud', (data: any) => {
+        globalTime.value = data.time;
+        combo.value = data.combo || 0;
+        currentLevel.value = data.level;
+        currentRound.value = data.round || 1;
+        isFever.value = data.isFever || false;
+        bossHP.value = data.bossHP;
+
+        if (data.time > maxTime.value) maxTime.value = data.time;
+    });
+
+    // Rule text (restored)
+    EventBus.on('update-rule', (rule: string) => {
+        currentRuleText.value = rule;
+    });
+
+    // Level intro (new feature - kept)
     EventBus.on('level-intro', (data: any) => {
         levelIntroData.value = {
             level: data.level,
@@ -109,6 +143,7 @@ onMounted(() => {
         showLevelIntro.value = true;
     });
 
+    // Round transition (new feature - kept)
     EventBus.on('round-transition', (data: any) => {
         roundTransitionData.value = {
             round: data.round,
@@ -117,11 +152,13 @@ onMounted(() => {
         showRoundTransition.value = true;
     });
 
+    // Perk selection
     EventBus.on('show-perks', () => {
         randomPerks.value = perks.sort(() => 0.5 - Math.random()).slice(0, 3);
         showPerks.value = true;
     });
 
+    // Game over
     EventBus.on('game-over', (data: any) => {
         reachedLevel.value = data.level;
         showGameOver.value = true;
@@ -130,45 +167,69 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+    EventBus.off('data-updated');
+    EventBus.off('update-hud');
+    EventBus.off('update-rule');
     EventBus.off('level-intro');
     EventBus.off('round-transition');
     EventBus.off('show-perks');
     EventBus.off('game-over');
-    EventBus.off('data-updated');
 });
 </script>
 
 <template>
-    <div class="game-container">
-        <PhaserGame ref="phaserRef" />
+    <div class="game-wrapper">
+        <div class="game-container" :class="{ 'fever-active': isFever }">
 
-        <!-- Level Intro -->
-        <div v-if="showLevelIntro" class="modal-overlay level-intro-overlay" @click="startLevel">
-            <div class="intro-content">
-                <h1 class="level-title">{{ levelIntroData.isBoss ? '⚔️ BOSS 战' : '第 ' + levelIntroData.level + ' 关' }}</h1>
-                <p class="rule-intro">{{ levelIntroData.ruleText }}</p>
-                <button class="start-btn">点击开始</button>
-            </div>
-        </div>
+            <!-- HUD (restored) -->
+            <div class="hud">
+                <!-- Top Bar -->
+                <div class="hud-top">
+                    <div class="level-badge">
+                        <span class="level-label">LEVEL</span>
+                        <span class="level-num">{{ currentLevel }}</span>
+                    </div>
 
-        <!-- Round Transition -->
-        <div v-if="showRoundTransition" class="modal-overlay transition-overlay" @click="continueNextRound">
-            <div class="transition-content">
-                <h2 class="round-text">回合 {{ roundTransitionData.round }}/{{ roundTransitionData.total }}</h2>
-                <p class="continue-hint">点击继续</p>
-            </div>
-        </div>
+                    <div class="rule-display">
+                        <span class="rule-text">{{ currentRuleText }}</span>
+                    </div>
 
-        <!-- Perk Selection -->
-        <div v-if="showPerks" class="modal-overlay">
-            <div class="modal-content perks-modal">
-                <h2>命运的抉择</h2>
-                <p>击败 Boss 奖励：选择一项强化</p>
-                <div class="perk-list">
-                    <div v-for="perk in randomPerks" :key="perk.id" class="perk-card" @click="selectPerk(perk.id)">
-                        <div class="perk-icon">{{ perk.icon }}</div>
-                        <h3>{{ perk.title }}</h3>
-                        <p>{{ perk.desc }}</p>
+                    <div class="coin-display">
+                        <span class="coin-icon">🪙</span>
+                        <span class="coin-value">{{ userCoins.toLocaleString() }}</span>
+                    </div>
+                </div>
+
+                <!-- Bars Row -->
+                <div class="hud-bars">
+                    <div class="bar-wrapper time-wrapper" :class="{ 'time-low': isTimeLow }">
+                        <div class="bar-icon">⏱</div>
+                        <div class="bar-container time-bar">
+                            <div class="bar-bg"></div>
+                            <div class="bar-fill" :style="{ width: timePercent + '%' }"></div>
+                            <div class="bar-shine"></div>
+                        </div>
+                        <div class="bar-value">{{ Math.ceil(globalTime) }}s</div>
+                    </div>
+
+                    <!-- Round & Combo Display -->
+                    <div class="status-row">
+                        <div class="round-display">
+                            <span class="round-label">回合</span>
+                            <span class="round-value">{{ currentRound }}/3</span>
+                        </div>
+
+                        <div class="combo-display" v-if="combo > 0" :class="{ 'combo-fever': combo >= 30 }">
+                            <span class="combo-icon">🔥</span>
+                            <span class="combo-value">{{ combo }}</span>
+                            <span class="combo-label">连击</span>
+                        </div>
+
+                        <!-- Boss HP inline -->
+                        <div class="boss-hp" v-if="bossHP !== null">
+                            <span class="boss-label">BOSS</span>
+                            <span v-for="i in 3" :key="i" class="hp-dot" :class="{ active: i <= bossHP }"></span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -178,11 +239,33 @@ onUnmounted(() => {
                 <div class="fever-text">FEVER!</div>
             </div>
 
+            <!-- Phaser Game -->
             <PhaserGame ref="phaserRef" />
+
+            <!-- Level Intro Modal (new feature - kept) -->
+            <Transition name="modal">
+                <div v-if="showLevelIntro" class="modal-overlay level-intro-overlay" @click="startLevel">
+                    <div class="intro-content">
+                        <h1 class="level-title">{{ levelIntroData.isBoss ? '⚔️ BOSS 战' : '第 ' + levelIntroData.level + ' 关' }}</h1>
+                        <p class="rule-intro">{{ levelIntroData.ruleText }}</p>
+                        <button class="start-btn">点击开始</button>
+                    </div>
+                </div>
+            </Transition>
+
+            <!-- Round Transition Modal (new feature - kept) -->
+            <Transition name="modal">
+                <div v-if="showRoundTransition" class="modal-overlay transition-overlay" @click="continueNextRound">
+                    <div class="transition-content">
+                        <h2 class="round-text">回合 {{ roundTransitionData.round }}/{{ roundTransitionData.total }}</h2>
+                        <p class="continue-hint">点击继续</p>
+                    </div>
+                </div>
+            </Transition>
 
             <!-- Perk Selection Modal -->
             <Transition name="modal">
-                <div v-if="showPerks" class="modal-overlay" @click.self="() => {}">
+                <div v-if="showPerks" class="modal-overlay">
                     <div class="modal-content perks-modal">
                         <div class="modal-header">
                             <h2>命运的抉择</h2>
@@ -225,10 +308,10 @@ onUnmounted(() => {
                         </div>
                         <div class="action-buttons">
                             <button class="btn btn-primary" @click="restartGame">
-                                <span>再次挑战</span>
+                                再次挑战
                             </button>
                             <button class="btn btn-secondary" @click="openShop">
-                                <span>强化中心</span>
+                                强化中心
                             </button>
                         </div>
                     </div>
@@ -309,13 +392,14 @@ onUnmounted(() => {
                     </div>
                 </div>
             </Transition>
+
         </div>
     </div>
 </template>
 
 <style scoped>
 /* ==================== CSS Variables ==================== */
-:root {
+.game-wrapper {
     --color-bg: #0a0a12;
     --color-surface: #1a1a2e;
     --color-surface-light: #252542;
@@ -335,8 +419,6 @@ onUnmounted(() => {
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 20px;
-
-    --shadow-glow: 0 0 20px;
 }
 
 /* ==================== Layout ==================== */
@@ -344,12 +426,318 @@ onUnmounted(() => {
     width: 100%;
     height: 100vh;
     display: flex;
-    flex-direction: column;
-    background-color: #0b0014;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    justify-content: center;
+    align-items: center;
+    background: #000;
+    font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
-/* Modal Styles */
+.game-container {
+    position: relative;
+    width: 1024px;
+    height: 768px;
+    background: var(--color-bg);
+    overflow: hidden;
+}
+
+.game-container.fever-active {
+    animation: feverPulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes feverPulse {
+    from { box-shadow: inset 0 0 60px rgba(251, 191, 36, 0.3); }
+    to { box-shadow: inset 0 0 100px rgba(251, 191, 36, 0.5); }
+}
+
+/* ==================== HUD ==================== */
+.hud {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    pointer-events: none;
+    padding: 12px 20px;
+    background: linear-gradient(180deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 70%, transparent 100%);
+}
+
+/* Top Row */
+.hud-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.level-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-surface-light) 100%);
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255,255,255,0.1);
+    min-width: 70px;
+}
+
+.level-label {
+    font-size: 10px;
+    color: var(--color-text-dim);
+    letter-spacing: 2px;
+    font-weight: 600;
+}
+
+.level-num {
+    font-size: 24px;
+    font-weight: bold;
+    color: var(--color-primary);
+    text-shadow: 0 0 10px var(--color-primary);
+    line-height: 1;
+}
+
+.rule-display {
+    flex: 1;
+    text-align: center;
+    padding: 0 20px;
+}
+
+.rule-text {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--color-gold);
+    text-shadow: 0 0 20px rgba(251, 191, 36, 0.6);
+    letter-spacing: 1px;
+}
+
+.coin-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.2) 0%, rgba(180, 83, 9, 0.2) 100%);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.coin-icon {
+    font-size: 1.4rem;
+}
+
+.coin-value {
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: var(--color-gold);
+    min-width: 60px;
+    text-align: right;
+}
+
+/* Bars Row */
+.hud-bars {
+    display: flex;
+    gap: 20px;
+}
+
+.bar-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+
+.bar-icon {
+    font-size: 1.2rem;
+    width: 24px;
+    text-align: center;
+}
+
+.bar-container {
+    flex: 1;
+    height: 22px;
+    position: relative;
+    border-radius: 11px;
+    overflow: hidden;
+}
+
+.bar-bg {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 11px;
+}
+
+.bar-fill {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    bottom: 2px;
+    border-radius: 9px;
+    transition: width 0.3s ease-out;
+}
+
+.time-bar .bar-fill {
+    background: linear-gradient(90deg, #ef4444 0%, #f97316 50%, #22c55e 100%);
+    background-size: 200% 100%;
+    background-position: right;
+}
+
+.time-wrapper.time-low .bar-fill {
+    background-position: left;
+    animation: timePulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes timePulse {
+    to { opacity: 0.7; }
+}
+
+/* Status Row (Round & Combo) */
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex: 1;
+    justify-content: flex-start;
+    padding-left: 20px;
+}
+
+.round-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--color-surface-light);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.round-label {
+    font-size: 0.85rem;
+    color: var(--color-text-dim);
+}
+
+.round-value {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: var(--color-primary);
+}
+
+.combo-display {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, rgba(255, 170, 0, 0.2) 0%, rgba(255, 100, 0, 0.2) 100%);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 170, 0, 0.4);
+    animation: comboGlow 0.5s ease-in-out infinite alternate;
+}
+
+.combo-display.combo-fever {
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.3) 0%, rgba(255, 140, 0, 0.3) 100%);
+    border-color: var(--color-gold);
+    box-shadow: 0 0 15px rgba(255, 215, 0, 0.4);
+}
+
+@keyframes comboGlow {
+    from { transform: scale(1); }
+    to { transform: scale(1.03); }
+}
+
+.combo-icon {
+    font-size: 1.2rem;
+}
+
+.combo-value {
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: #ffaa00;
+    text-shadow: 0 0 8px rgba(255, 170, 0, 0.6);
+}
+
+.combo-label {
+    font-size: 0.85rem;
+    color: #ffcc66;
+}
+
+.bar-shine {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    right: 2px;
+    height: 8px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.3) 0%, transparent 100%);
+    border-radius: 9px 9px 0 0;
+    pointer-events: none;
+}
+
+.bar-value {
+    font-size: 0.95rem;
+    font-weight: bold;
+    color: var(--color-text);
+    min-width: 45px;
+    text-align: right;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+}
+
+/* Boss HP */
+.boss-hp {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 15px;
+    padding-left: 15px;
+    border-left: 1px solid rgba(255,255,255,0.2);
+}
+
+.boss-label {
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--color-danger);
+    letter-spacing: 1px;
+}
+
+.hp-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgba(239, 68, 68, 0.2);
+    border: 2px solid var(--color-danger);
+    transition: all 0.3s;
+}
+
+.hp-dot.active {
+    background: var(--color-danger);
+    box-shadow: 0 0 10px var(--color-danger);
+}
+
+/* Fever Overlay */
+.fever-overlay {
+    position: absolute;
+    top: 110px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 15;
+    pointer-events: none;
+}
+
+.fever-text {
+    font-size: 3rem;
+    font-weight: bold;
+    color: var(--color-gold);
+    text-shadow:
+        0 0 20px var(--color-gold),
+        0 0 40px var(--color-gold),
+        0 0 60px rgba(251, 191, 36, 0.5);
+    animation: feverBounce 0.5s ease-in-out infinite alternate;
+    letter-spacing: 8px;
+}
+
+@keyframes feverBounce {
+    from { transform: scale(1); }
+    to { transform: scale(1.1); }
+}
+
+/* ==================== Modal Base ==================== */
 .modal-overlay {
     position: absolute;
     inset: 0;
@@ -401,25 +789,89 @@ onUnmounted(() => {
 }
 
 @keyframes modalIn {
-    from {
-        opacity: 0;
-        transform: scale(0.9);
-    }
-    to {
-        opacity: 1;
-        transform: scale(1);
-    }
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
 }
 
 @keyframes modalOut {
-    from {
-        opacity: 1;
-        transform: scale(1);
-    }
-    to {
-        opacity: 0;
-        transform: scale(0.9);
-    }
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.9); }
+}
+
+/* ==================== Level Intro (new feature) ==================== */
+.level-intro-overlay {
+    cursor: pointer;
+}
+
+.intro-content {
+    text-align: center;
+    animation: fadeInScale 0.5s ease;
+}
+
+.level-title {
+    font-size: 3.5rem;
+    margin: 0 0 30px 0;
+    color: var(--color-gold);
+    text-shadow: 0 0 30px rgba(251, 191, 36, 0.8);
+}
+
+.rule-intro {
+    font-size: 1.8rem;
+    color: #ecf0f1;
+    margin-bottom: 50px;
+    max-width: 600px;
+}
+
+.start-btn {
+    padding: 15px 50px;
+    font-size: 1.5rem;
+    font-weight: bold;
+    background: linear-gradient(135deg, var(--color-gold), var(--color-gold-dark));
+    border: none;
+    border-radius: 30px;
+    color: #1a1a2e;
+    cursor: pointer;
+    transition: all 0.3s;
+    animation: pulse 2s infinite;
+}
+
+.start-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 30px rgba(251, 191, 36, 0.8);
+}
+
+/* ==================== Round Transition (new feature) ==================== */
+.transition-overlay {
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.transition-content {
+    text-align: center;
+    animation: fadeInScale 0.3s ease;
+}
+
+.round-text {
+    font-size: 3rem;
+    margin: 0 0 20px 0;
+    color: var(--color-primary);
+    text-shadow: 0 0 20px rgba(0, 212, 255, 0.8);
+}
+
+.continue-hint {
+    font-size: 1.2rem;
+    color: var(--color-text-dim);
+    opacity: 0.8;
+}
+
+@keyframes fadeInScale {
+    from { opacity: 0; transform: scale(0.8); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
 }
 
 /* ==================== Perk Modal ==================== */
@@ -445,10 +897,7 @@ onUnmounted(() => {
 }
 
 @keyframes perkSlideIn {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
+    from { opacity: 0; transform: translateY(20px); }
 }
 
 .perk-card:hover {
@@ -646,89 +1095,34 @@ onUnmounted(() => {
     transform: scale(0.96);
 }
 
-/* Level Intro */
-.level-intro-overlay {
-    cursor: pointer;
+.btn-primary {
+    background: linear-gradient(135deg, var(--color-primary) 0%, #0891b2 100%);
+    color: white;
 }
 
-.intro-content {
-    text-align: center;
-    animation: fadeInScale 0.5s ease;
+.btn-primary:hover {
+    box-shadow: 0 5px 25px rgba(0, 212, 255, 0.4);
 }
 
-.level-title {
-    font-size: 4rem;
-    margin: 0 0 30px 0;
-    color: #f1c40f;
-    text-shadow: 0 0 20px rgba(241, 196, 15, 0.8);
+.btn-secondary {
+    background: linear-gradient(135deg, var(--color-gold) 0%, var(--color-gold-dark) 100%);
+    color: #1a1a2e;
 }
 
-.rule-intro {
-    font-size: 1.8rem;
-    color: #ecf0f1;
-    margin-bottom: 50px;
-    max-width: 600px;
+.btn-secondary:hover {
+    box-shadow: 0 5px 25px rgba(251, 191, 36, 0.4);
 }
 
-.start-btn {
-    padding: 15px 50px;
-    font-size: 1.5rem;
-    font-weight: bold;
-    background: linear-gradient(135deg, #f1c40f, #f39c12);
-    border: none;
-    border-radius: 30px;
-    color: #2c3e50;
-    cursor: pointer;
-    transition: all 0.3s;
-    animation: pulse 2s infinite;
+.btn-accent {
+    background: linear-gradient(135deg, var(--color-danger) 0%, #dc2626 100%);
+    color: white;
 }
 
-.start-btn:hover {
-    transform: scale(1.1);
-    box-shadow: 0 0 30px rgba(241, 196, 15, 0.8);
+.btn-accent:hover {
+    box-shadow: 0 5px 25px rgba(239, 68, 68, 0.4);
 }
 
-/* Round Transition */
-.transition-overlay {
-    cursor: pointer;
-    background: rgba(0, 0, 0, 0.7);
-}
-
-.transition-content {
-    text-align: center;
-    animation: fadeInScale 0.3s ease;
-}
-
-.round-text {
-    font-size: 3rem;
-    margin: 0 0 20px 0;
-    color: #3498db;
-    text-shadow: 0 0 15px rgba(52, 152, 219, 0.8);
-}
-
-.continue-hint {
-    font-size: 1.2rem;
-    color: #bdc3c7;
-    opacity: 0.8;
-}
-
-@keyframes fadeInScale {
-    from {
-        opacity: 0;
-        transform: scale(0.8);
-    }
-    to {
-        opacity: 1;
-        transform: scale(1);
-    }
-}
-
-@keyframes pulse {
-    0%, 100% {
-        transform: scale(1);
-    }
-    50% {
-        transform: scale(1.05);
-    }
+.full-width {
+    width: 100%;
 }
 </style>
