@@ -6,21 +6,14 @@ import { GameDataManager } from './game/data/GameData';
 
 // State
 const phaserRef = ref();
-const currentRuleText = ref('加载中...');
 const dataManager = GameDataManager.getInstance();
-
-// Gameplay Stats
-const globalTime = ref(60);
-const maxTime = ref(60);
-const energy = ref(0);
-const currentLevel = ref(1);
-const isFever = ref(false);
-const bossHP = ref<number | null>(null);
 const userCoins = ref(dataManager.coins);
 
-// Computed
-const timePercent = computed(() => Math.max(0, (globalTime.value / maxTime.value) * 100));
-const isTimeLow = computed(() => globalTime.value <= 10);
+// UI State
+const showLevelIntro = ref(false);
+const showRoundTransition = ref(false);
+const levelIntroData = ref({ level: 1, isBoss: false, ruleText: '' });
+const roundTransitionData = ref({ round: 1, total: 3 });
 
 // Modals
 const showPerks = ref(false);
@@ -80,6 +73,16 @@ const closeShop = () => {
     EventBus.emit('restart-game');
 };
 
+const startLevel = () => {
+    showLevelIntro.value = false;
+    EventBus.emit('start-level');
+};
+
+const continueNextRound = () => {
+    showRoundTransition.value = false;
+    EventBus.emit('next-round');
+};
+
 const selectPerk = (perkId: string) => {
     showPerks.value = false;
     EventBus.emit('apply-perk', perkId);
@@ -97,18 +100,21 @@ onMounted(() => {
         userCoins.value = dataManager.coins;
     });
 
-    EventBus.on('update-hud', (data: any) => {
-        globalTime.value = data.time;
-        energy.value = data.energy;
-        currentLevel.value = data.level;
-        isFever.value = data.isFever;
-        bossHP.value = data.bossHP;
-
-        if (data.time > maxTime.value) maxTime.value = data.time;
+    EventBus.on('level-intro', (data: any) => {
+        levelIntroData.value = {
+            level: data.level,
+            isBoss: data.isBoss,
+            ruleText: data.ruleText
+        };
+        showLevelIntro.value = true;
     });
 
-    EventBus.on('update-rule', (rule: string) => {
-        currentRuleText.value = rule;
+    EventBus.on('round-transition', (data: any) => {
+        roundTransitionData.value = {
+            round: data.round,
+            total: data.total
+        };
+        showRoundTransition.value = true;
     });
 
     EventBus.on('show-perks', () => {
@@ -124,8 +130,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-    EventBus.off('update-hud');
-    EventBus.off('update-rule');
+    EventBus.off('level-intro');
+    EventBus.off('round-transition');
     EventBus.off('show-perks');
     EventBus.off('game-over');
     EventBus.off('data-updated');
@@ -133,53 +139,36 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="game-wrapper">
-        <div class="game-container" :class="{ 'fever-active': isFever }">
-            <!-- Compact HUD -->
-            <div class="hud">
-                <!-- Top Bar -->
-                <div class="hud-top">
-                    <div class="level-badge">
-                        <span class="level-label">LEVEL</span>
-                        <span class="level-num">{{ currentLevel }}</span>
-                    </div>
+    <div class="game-container">
+        <PhaserGame ref="phaserRef" />
 
-                    <div class="rule-display">
-                        <span class="rule-text">{{ currentRuleText }}</span>
-                    </div>
+        <!-- Level Intro -->
+        <div v-if="showLevelIntro" class="modal-overlay level-intro-overlay" @click="startLevel">
+            <div class="intro-content">
+                <h1 class="level-title">{{ levelIntroData.isBoss ? '⚔️ BOSS 战' : '第 ' + levelIntroData.level + ' 关' }}</h1>
+                <p class="rule-intro">{{ levelIntroData.ruleText }}</p>
+                <button class="start-btn">点击开始</button>
+            </div>
+        </div>
 
-                    <div class="coin-display">
-                        <span class="coin-icon">🪙</span>
-                        <span class="coin-value">{{ userCoins.toLocaleString() }}</span>
-                    </div>
-                </div>
+        <!-- Round Transition -->
+        <div v-if="showRoundTransition" class="modal-overlay transition-overlay" @click="continueNextRound">
+            <div class="transition-content">
+                <h2 class="round-text">回合 {{ roundTransitionData.round }}/{{ roundTransitionData.total }}</h2>
+                <p class="continue-hint">点击继续</p>
+            </div>
+        </div>
 
-                <!-- Bars Row -->
-                <div class="hud-bars">
-                    <div class="bar-wrapper time-wrapper" :class="{ 'time-low': isTimeLow }">
-                        <div class="bar-icon">⏱</div>
-                        <div class="bar-container time-bar">
-                            <div class="bar-bg"></div>
-                            <div class="bar-fill" :style="{ width: timePercent + '%' }"></div>
-                            <div class="bar-shine"></div>
-                        </div>
-                        <div class="bar-value">{{ Math.ceil(globalTime) }}s</div>
-                    </div>
-
-                    <div class="bar-wrapper energy-wrapper" :class="{ 'fever-ready': energy >= 100 }">
-                        <div class="bar-icon">⚡</div>
-                        <div class="bar-container energy-bar">
-                            <div class="bar-bg"></div>
-                            <div class="bar-fill" :style="{ width: energy + '%' }"></div>
-                            <div class="bar-shine"></div>
-                        </div>
-                        <div class="bar-value">{{ Math.floor(energy) }}%</div>
-
-                        <!-- Boss HP inline -->
-                        <div class="boss-hp" v-if="bossHP !== null">
-                            <span class="boss-label">BOSS</span>
-                            <span v-for="i in 3" :key="i" class="hp-dot" :class="{ active: i <= bossHP }"></span>
-                        </div>
+        <!-- Perk Selection -->
+        <div v-if="showPerks" class="modal-overlay">
+            <div class="modal-content perks-modal">
+                <h2>命运的抉择</h2>
+                <p>击败 Boss 奖励：选择一项强化</p>
+                <div class="perk-list">
+                    <div v-for="perk in randomPerks" :key="perk.id" class="perk-card" @click="selectPerk(perk.id)">
+                        <div class="perk-icon">{{ perk.icon }}</div>
+                        <h3>{{ perk.title }}</h3>
+                        <p>{{ perk.desc }}</p>
                     </div>
                 </div>
             </div>
@@ -355,259 +344,12 @@ onUnmounted(() => {
     width: 100%;
     height: 100vh;
     display: flex;
-    justify-content: center;
-    align-items: center;
-    background: #000;
-}
-
-.game-container {
-    position: relative;
-    width: 1024px;
-    height: 768px;
-    background: var(--color-bg);
-    overflow: hidden;
-    font-family: 'Segoe UI', system-ui, sans-serif;
-}
-
-.game-container.fever-active {
-    animation: feverPulse 0.5s ease-in-out infinite alternate;
-}
-
-@keyframes feverPulse {
-    from { box-shadow: inset 0 0 60px rgba(251, 191, 36, 0.3); }
-    to { box-shadow: inset 0 0 100px rgba(251, 191, 36, 0.5); }
-}
-
-/* ==================== HUD ==================== */
-.hud {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 10;
-    pointer-events: none;
-    padding: 12px 20px;
-    background: linear-gradient(180deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 70%, transparent 100%);
-}
-
-/* Top Row */
-.hud-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-}
-
-.level-badge {
-    display: flex;
     flex-direction: column;
-    align-items: center;
-    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-surface-light) 100%);
-    padding: 6px 16px;
-    border-radius: var(--radius-sm);
-    border: 1px solid rgba(255,255,255,0.1);
-    min-width: 70px;
+    background-color: #0b0014;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-.level-label {
-    font-size: 10px;
-    color: var(--color-text-dim);
-    letter-spacing: 2px;
-    font-weight: 600;
-}
-
-.level-num {
-    font-size: 24px;
-    font-weight: bold;
-    color: var(--color-primary);
-    text-shadow: 0 0 10px var(--color-primary);
-    line-height: 1;
-}
-
-.rule-display {
-    flex: 1;
-    text-align: center;
-    padding: 0 20px;
-}
-
-.rule-text {
-    font-size: 1.6rem;
-    font-weight: bold;
-    color: var(--color-gold);
-    text-shadow: 0 0 20px rgba(251, 191, 36, 0.6);
-    letter-spacing: 1px;
-}
-
-.coin-display {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: linear-gradient(135deg, rgba(251, 191, 36, 0.2) 0%, rgba(180, 83, 9, 0.2) 100%);
-    padding: 8px 16px;
-    border-radius: var(--radius-sm);
-    border: 1px solid rgba(251, 191, 36, 0.3);
-}
-
-.coin-icon {
-    font-size: 1.4rem;
-}
-
-.coin-value {
-    font-size: 1.3rem;
-    font-weight: bold;
-    color: var(--color-gold);
-    min-width: 60px;
-    text-align: right;
-}
-
-/* Bars Row */
-.hud-bars {
-    display: flex;
-    gap: 20px;
-}
-
-.bar-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 1;
-}
-
-.bar-icon {
-    font-size: 1.2rem;
-    width: 24px;
-    text-align: center;
-}
-
-.bar-container {
-    flex: 1;
-    height: 22px;
-    position: relative;
-    border-radius: 11px;
-    overflow: hidden;
-}
-
-.bar-bg {
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 11px;
-}
-
-.bar-fill {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    bottom: 2px;
-    border-radius: 9px;
-    transition: width 0.3s ease-out;
-}
-
-.time-bar .bar-fill {
-    background: linear-gradient(90deg, #ef4444 0%, #f97316 50%, #22c55e 100%);
-    background-size: 200% 100%;
-    background-position: right;
-}
-
-.time-wrapper.time-low .bar-fill {
-    background-position: left;
-    animation: timePulse 0.5s ease-in-out infinite alternate;
-}
-
-@keyframes timePulse {
-    to { opacity: 0.7; }
-}
-
-.energy-bar .bar-fill {
-    background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 50%, #fbbf24 100%);
-    background-size: 200% 100%;
-    background-position: left;
-}
-
-.energy-wrapper .bar-fill {
-    background-position: calc(var(--energy, 0) * 1%);
-}
-
-.bar-shine {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    right: 2px;
-    height: 8px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.3) 0%, transparent 100%);
-    border-radius: 9px 9px 0 0;
-    pointer-events: none;
-}
-
-.bar-value {
-    font-size: 0.95rem;
-    font-weight: bold;
-    color: var(--color-text);
-    min-width: 45px;
-    text-align: right;
-    text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
-}
-
-/* Boss HP */
-.boss-hp {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 15px;
-    padding-left: 15px;
-    border-left: 1px solid rgba(255,255,255,0.2);
-}
-
-.boss-label {
-    font-size: 11px;
-    font-weight: bold;
-    color: var(--color-danger);
-    letter-spacing: 1px;
-}
-
-.hp-dot {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: rgba(239, 68, 68, 0.2);
-    border: 2px solid var(--color-danger);
-    transition: all 0.3s;
-}
-
-.hp-dot.active {
-    background: var(--color-danger);
-    box-shadow: 0 0 10px var(--color-danger);
-}
-
-/* Fever Overlay */
-.fever-overlay {
-    position: absolute;
-    top: 100px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 15;
-    pointer-events: none;
-}
-
-.fever-text {
-    font-size: 3rem;
-    font-weight: bold;
-    color: var(--color-gold);
-    text-shadow:
-        0 0 20px var(--color-gold),
-        0 0 40px var(--color-gold),
-        0 0 60px rgba(251, 191, 36, 0.5);
-    animation: feverBounce 0.5s ease-in-out infinite alternate;
-    letter-spacing: 8px;
-}
-
-@keyframes feverBounce {
-    from { transform: scale(1); }
-    to { transform: scale(1.1); }
-}
-
-/* ==================== Modal Base ==================== */
+/* Modal Styles */
 .modal-overlay {
     position: absolute;
     inset: 0;
@@ -904,34 +646,89 @@ onUnmounted(() => {
     transform: scale(0.96);
 }
 
-.btn-primary {
-    background: linear-gradient(135deg, var(--color-primary) 0%, #0891b2 100%);
-    color: white;
+/* Level Intro */
+.level-intro-overlay {
+    cursor: pointer;
 }
 
-.btn-primary:hover {
-    box-shadow: 0 5px 25px rgba(0, 212, 255, 0.4);
+.intro-content {
+    text-align: center;
+    animation: fadeInScale 0.5s ease;
 }
 
-.btn-secondary {
-    background: linear-gradient(135deg, var(--color-gold) 0%, var(--color-gold-dark) 100%);
-    color: #1a1a2e;
+.level-title {
+    font-size: 4rem;
+    margin: 0 0 30px 0;
+    color: #f1c40f;
+    text-shadow: 0 0 20px rgba(241, 196, 15, 0.8);
 }
 
-.btn-secondary:hover {
-    box-shadow: 0 5px 25px rgba(251, 191, 36, 0.4);
+.rule-intro {
+    font-size: 1.8rem;
+    color: #ecf0f1;
+    margin-bottom: 50px;
+    max-width: 600px;
 }
 
-.btn-accent {
-    background: linear-gradient(135deg, var(--color-danger) 0%, #dc2626 100%);
-    color: white;
+.start-btn {
+    padding: 15px 50px;
+    font-size: 1.5rem;
+    font-weight: bold;
+    background: linear-gradient(135deg, #f1c40f, #f39c12);
+    border: none;
+    border-radius: 30px;
+    color: #2c3e50;
+    cursor: pointer;
+    transition: all 0.3s;
+    animation: pulse 2s infinite;
 }
 
-.btn-accent:hover {
-    box-shadow: 0 5px 25px rgba(239, 68, 68, 0.4);
+.start-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 30px rgba(241, 196, 15, 0.8);
 }
 
-.full-width {
-    width: 100%;
+/* Round Transition */
+.transition-overlay {
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.transition-content {
+    text-align: center;
+    animation: fadeInScale 0.3s ease;
+}
+
+.round-text {
+    font-size: 3rem;
+    margin: 0 0 20px 0;
+    color: #3498db;
+    text-shadow: 0 0 15px rgba(52, 152, 219, 0.8);
+}
+
+.continue-hint {
+    font-size: 1.2rem;
+    color: #bdc3c7;
+    opacity: 0.8;
+}
+
+@keyframes fadeInScale {
+    from {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
 }
 </style>
