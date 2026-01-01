@@ -3,11 +3,13 @@ import { Scene } from 'phaser';
 import Phaser from 'phaser';
 import { GameDataManager } from '../data/GameData';
 import { LevelManager, LevelConfig, ThemeConfig } from '../data/LevelManager';
+import { EffectsManager } from '../effects/EffectsManager';
 
 export class Game extends Scene
 {
     // Managers
     dataManager: GameDataManager;
+    effectsManager: EffectsManager;
     
     // Level State
     currentLevel: number = 1;
@@ -25,7 +27,6 @@ export class Game extends Scene
     gridGroup: Phaser.GameObjects.Group;
     readyGroup: Phaser.GameObjects.Group; // For the "Get Ready" text
     readyTimer: Phaser.Time.TimerEvent | null = null;
-    particleEmitter: Phaser.GameObjects.Particles.ParticleEmitter;
     
     // Perk modifiers
     perkTimeThief: boolean = false;
@@ -41,21 +42,21 @@ export class Game extends Scene
     create ()
     {
         this.dataManager = GameDataManager.getInstance();
-        
+
         // Initialize global relay time
         this.globalTime = this.dataManager.getInitialTime();
         this.energy = 0;
         this.currentLevel = 1;
 
-        // Particles
-        this.particleEmitter = this.add.particles(0, 0, 'star', {
-            lifespan: 800,
-            speed: { min: 150, max: 350 },
-            scale: { start: 0.6, end: 0 },
-            alpha: { start: 1, end: 0 },
-            gravityY: 200,
-            emitting: false
-        });
+        // Initialize Effects Manager
+        this.effectsManager = new EffectsManager(this);
+        // Set UI targets: coin counter at top-right, score at top-center
+        this.effectsManager.setTargets(
+            this.scale.width - 80,  // coinX
+            40,                      // coinY
+            this.scale.width / 2,    // scoreX
+            60                       // scoreY
+        );
 
         this.readyGroup = this.add.group();
 
@@ -74,9 +75,10 @@ export class Game extends Scene
         EventBus.off('restart-game', this.resetChallenge, this);
         EventBus.off('apply-perk', this.applyPerk, this);
         if (this.readyTimer) this.readyTimer.remove();
+        if (this.effectsManager) this.effectsManager.destroy();
     }
 
-    update(time: number, delta: number)
+    update(_time: number, delta: number)
     {
         if (!this.isPlaying) return; // Pause logic during "Get Ready"
 
@@ -227,7 +229,11 @@ export class Game extends Scene
                 text.setData('targetY', targetY);
 
                 text.on('pointerdown', () => {
-                    if (this.isPlaying) this.handleItemClick(text);
+                    if (this.isPlaying) {
+                        // Play click effect (squash & stretch)
+                        this.effectsManager.playClickEffect(text);
+                        this.handleItemClick(text);
+                    }
                 });
 
                 text.on('pointerover', () => {
@@ -300,25 +306,33 @@ export class Game extends Scene
     processCorrectHit(...targets: Phaser.GameObjects.Text[]) {
         this.isPlaying = false; // Lock input immediately to prevent double-click or mis-touch
 
-        targets.forEach(t => {
-            t.setColor('#00ff00');
-            this.particleEmitter.explode(20, t.x, t.y);
+        // Play correct effect for each target
+        targets.forEach((t, index) => {
+            // Use enhanced effects
+            this.effectsManager.playCorrectEffect(t, () => {
+                // After last target animation completes
+                if (index === targets.length - 1) {
+                    this.onCorrectAnimationComplete();
+                }
+            });
         });
 
         // Add Energy
         this.addEnergy(10);
+    }
 
+    private onCorrectAnimationComplete() {
         if (this.levelConfig.isBoss) {
             this.bossHP--;
             if (this.bossHP > 0) {
                 // Next stage of boss
-                this.time.delayedCall(500, () => {
+                this.time.delayedCall(300, () => {
                     const { rows, cols } = this.levelConfig.gridSize;
                     const newData = this.generateLevelData(rows * cols);
-                    
+
                     // Update rule text just in case
                     EventBus.emit('update-rule', newData.ruleText);
-                    
+
                     this.gridGroup.clear(true, true);
                     this.buildGrid(newData);
                     this.isPlaying = true; // Re-enable input after boss stage transition
@@ -334,7 +348,7 @@ export class Game extends Scene
     processWrongHit(...targets: Phaser.GameObjects.Text[]) {
         if (this.perkShieldActive && !this.usedShieldThisLevel) {
             this.usedShieldThisLevel = true;
-            this.showFloatingText(targets[0].x, targets[0].y, 'SHIELDED', '#3498db');
+            this.effectsManager.showFloatingText(targets[0].x, targets[0].y, 'SHIELDED', '#3498db');
             return;
         }
 
@@ -342,14 +356,10 @@ export class Game extends Scene
         const penalty = this.dataManager.getPenaltyTime();
         this.globalTime -= penalty;
         this.energy = Math.max(0, this.energy - 50);
-        this.cameras.main.shake(200, 0.01);
-        
-        targets.forEach(t => {
-            t.setColor('#ff0000');
-            this.tweens.add({ targets: t, x: '+=5', yoyo: true, repeat: 3, duration: 50 });
-        });
 
-        this.showFloatingText(targets[0].x, targets[0].y, `-${penalty}s`, '#ff0000');
+        // Play enhanced wrong effects
+        this.effectsManager.playWrongEffect(targets, this.cameras.main);
+        this.effectsManager.showFloatingText(targets[0].x, targets[0].y, `-${penalty}s`, '#ff0000');
     }
 
     addEnergy(amount: number) {
@@ -368,11 +378,18 @@ export class Game extends Scene
         this.isFever = true;
         this.feverTimer = 8; // 8 seconds
         this.cameras.main.flash(500, 255, 215, 0);
+
+        // Start fever visual effects
+        // Energy bar position (approximate - adjust based on your UI)
+        const energyBarX = this.scale.width / 2;
+        const energyBarY = 80;
+        this.effectsManager.startFever(energyBarX, energyBarY);
     }
 
     stopFever() {
         this.isFever = false;
         this.energy = 0;
+        this.effectsManager.stopFever();
     }
 
     winLevel() {
@@ -385,11 +402,23 @@ export class Game extends Scene
         const baseCoins = this.levelConfig.isBoss ? 50 : 10;
         const mult = this.dataManager.getCoinMultiplier();
         const finalCoins = Math.floor(baseCoins * mult * (this.isFever ? 2 : 1));
-        this.dataManager.addCoins(finalCoins);
 
-        this.showFloatingText(this.scale.width/2, this.scale.height/2, `+${bonus}s`, '#00ff00');
+        // Show floating bonus text
+        this.effectsManager.showFloatingText(this.scale.width/2, this.scale.height/2, `+${bonus}s`, '#00ff00', 1.2);
 
-        this.time.delayedCall(800, () => {
+        // Play coin spray effect
+        const coinCount = Math.min(finalCoins / 2, 15); // Scale coin particles with reward
+        this.effectsManager.playCoinSpray(
+            this.scale.width / 2,
+            this.scale.height / 2,
+            coinCount,
+            () => {
+                // Add coins after collection animation
+                this.dataManager.addCoins(finalCoins);
+            }
+        );
+
+        this.time.delayedCall(1200, () => {
             if (this.currentLevel % 5 === 0) {
                 // Trigger Perk Selection every 5 levels
                 EventBus.emit('show-perks');
@@ -410,12 +439,7 @@ export class Game extends Scene
         this.scene.pause();
     }
 
-    // --- Helpers ---
-
-    showFloatingText(x: number, y: number, msg: string, col: string) {
-        const t = this.add.text(x, y, msg, { font: 'bold 32px Arial', color: col }).setOrigin(0.5);
-        this.tweens.add({ targets: t, y: y - 100, alpha: 0, duration: 800, onComplete: () => t.destroy() });
-    }
+    // --- Level Data Generation ---
 
     generateLevelData(count: number) {
         const rule = this.levelConfig.rule;

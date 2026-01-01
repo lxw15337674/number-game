@@ -34,6 +34,35 @@ export class Preloader extends Scene
 
         this.load.image('logo', 'logo.png');
         this.load.image('star', 'star.png');
+
+        // Generate procedural textures for effects
+        this.generateEffectTextures();
+    }
+
+    generateEffectTextures()
+    {
+        // Generate coin texture (golden circle with highlight)
+        const coinGraphics = this.make.graphics({ x: 0, y: 0 });
+        coinGraphics.fillStyle(0xffd700);
+        coinGraphics.fillCircle(16, 16, 14);
+        coinGraphics.fillStyle(0xffec8b);
+        coinGraphics.fillCircle(12, 12, 6);
+        coinGraphics.lineStyle(2, 0xb8860b);
+        coinGraphics.strokeCircle(16, 16, 14);
+        coinGraphics.generateTexture('coin', 32, 32);
+        coinGraphics.destroy();
+
+        // Generate particle texture (soft glow circle)
+        const particleGraphics = this.make.graphics({ x: 0, y: 0 });
+        particleGraphics.fillStyle(0xffffff);
+        particleGraphics.fillCircle(8, 8, 8);
+        // Add gradient-like effect with alpha circles
+        particleGraphics.fillStyle(0xffffff, 0.6);
+        particleGraphics.fillCircle(8, 8, 6);
+        particleGraphics.fillStyle(0xffffff, 0.3);
+        particleGraphics.fillCircle(8, 8, 4);
+        particleGraphics.generateTexture('particle', 16, 16);
+        particleGraphics.destroy();
     }
 
     create ()
