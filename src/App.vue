@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import { EventBus } from './game/EventBus';
 import PhaserGame from './PhaserGame.vue';
 import { GameDataManager } from './game/data/GameData';
@@ -7,6 +7,17 @@ import { GameDataManager } from './game/data/GameData';
 // State
 const phaserRef = ref();
 const dataManager = GameDataManager.getInstance();
+
+// Game scaling
+const GAME_WIDTH = 1024;
+const GAME_HEIGHT = 768;
+const gameScale = ref(1);
+
+const calculateScale = () => {
+    const scaleX = window.innerWidth / GAME_WIDTH;
+    const scaleY = window.innerHeight / GAME_HEIGHT;
+    gameScale.value = Math.min(scaleX, scaleY);
+};
 
 // HUD Data (restored)
 const globalTime = ref(60);
@@ -19,9 +30,49 @@ const bossHP = ref<number | null>(null);
 const userCoins = ref(dataManager.coins);
 const currentRuleText = ref('');
 
+// Animation States
+const comboBounce = ref(false);
+const comboMilestone = ref('');
+const timeCritical = ref(false);
+
 // Computed
 const timePercent = computed(() => Math.max(0, (globalTime.value / maxTime.value) * 100));
 const isTimeLow = computed(() => globalTime.value <= 10);
+
+// Watch combo for animations
+watch(combo, (newVal, oldVal) => {
+    if (newVal > oldVal && newVal > 0) {
+        // Trigger bounce animation
+        comboBounce.value = true;
+        setTimeout(() => comboBounce.value = false, 300);
+
+        // Check milestones
+        if (newVal === 10) {
+            showMilestone('🔥 GREAT!');
+        } else if (newVal === 20) {
+            showMilestone('⚡ AMAZING!');
+        } else if (newVal === 30) {
+            showMilestone('💥 FEVER!');
+        } else if (newVal === 50) {
+            showMilestone('🌟 LEGENDARY!');
+        }
+    }
+});
+
+// Watch time for critical state
+watch(globalTime, (newVal) => {
+    if (newVal <= 10 && newVal > 0) {
+        timeCritical.value = true;
+    } else {
+        timeCritical.value = false;
+    }
+});
+
+// Milestone display
+const showMilestone = (text: string) => {
+    comboMilestone.value = text;
+    setTimeout(() => comboMilestone.value = '', 1500);
+};
 
 // UI State (new features - kept)
 const showLevelIntro = ref(false);
@@ -98,6 +149,17 @@ const continueNextRound = () => {
     EventBus.emit('next-round');
 };
 
+// Auto-close round transition
+watch(showRoundTransition, (newVal) => {
+    if (newVal) {
+        setTimeout(() => {
+            if (showRoundTransition.value) {
+                continueNextRound();
+            }
+        }, 1200);
+    }
+});
+
 const selectPerk = (perkId: string) => {
     showPerks.value = false;
     EventBus.emit('apply-perk', perkId);
@@ -109,6 +171,10 @@ const restartGame = () => {
 };
 
 onMounted(() => {
+    // Initialize scaling
+    calculateScale();
+    window.addEventListener('resize', calculateScale);
+
     refreshShopData();
 
     // Data updated
@@ -167,6 +233,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+    window.removeEventListener('resize', calculateScale);
     EventBus.off('data-updated');
     EventBus.off('update-hud');
     EventBus.off('update-rule');
@@ -179,7 +246,7 @@ onUnmounted(() => {
 
 <template>
     <div class="game-wrapper">
-        <div class="game-container" :class="{ 'fever-active': isFever }">
+        <div class="game-container" :class="{ 'fever-active': isFever }" :style="{ transform: `scale(${gameScale})` }">
 
             <!-- HUD (restored) -->
             <div class="hud">
@@ -202,14 +269,14 @@ onUnmounted(() => {
 
                 <!-- Bars Row -->
                 <div class="hud-bars">
-                    <div class="bar-wrapper time-wrapper" :class="{ 'time-low': isTimeLow }">
+                    <div class="bar-wrapper time-wrapper" :class="{ 'time-low': isTimeLow, 'time-critical': timeCritical }">
                         <div class="bar-icon">⏱</div>
                         <div class="bar-container time-bar">
                             <div class="bar-bg"></div>
                             <div class="bar-fill" :style="{ width: timePercent + '%' }"></div>
                             <div class="bar-shine"></div>
                         </div>
-                        <div class="bar-value">{{ Math.ceil(globalTime) }}s</div>
+                        <div class="bar-value" :class="{ 'value-critical': timeCritical }">{{ Math.ceil(globalTime) }}s</div>
                     </div>
 
                     <!-- Round & Combo Display -->
@@ -219,7 +286,7 @@ onUnmounted(() => {
                             <span class="round-value">{{ currentRound }}/3</span>
                         </div>
 
-                        <div class="combo-display" v-if="combo > 0" :class="{ 'combo-fever': combo >= 30 }">
+                        <div class="combo-display" v-if="combo > 0" :class="{ 'combo-fever': combo >= 30, 'combo-bounce': comboBounce }">
                             <span class="combo-icon">🔥</span>
                             <span class="combo-value">{{ combo }}</span>
                             <span class="combo-label">连击</span>
@@ -232,6 +299,13 @@ onUnmounted(() => {
                         </div>
                     </div>
                 </div>
+
+                <!-- Combo Milestone -->
+                <Transition name="milestone">
+                    <div v-if="comboMilestone" class="combo-milestone">
+                        {{ comboMilestone }}
+                    </div>
+                </Transition>
             </div>
 
             <!-- Fever Overlay -->
@@ -254,11 +328,16 @@ onUnmounted(() => {
             </Transition>
 
             <!-- Round Transition Modal (new feature - kept) -->
-            <Transition name="modal">
+            <Transition name="round-transition">
                 <div v-if="showRoundTransition" class="modal-overlay transition-overlay" @click="continueNextRound">
                     <div class="transition-content">
-                        <h2 class="round-text">回合 {{ roundTransitionData.round }}/{{ roundTransitionData.total }}</h2>
-                        <p class="continue-hint">点击继续</p>
+                        <div class="round-progress">
+                            <span v-for="i in 3" :key="i" class="progress-dot" :class="{ completed: i < roundTransitionData.round, current: i === roundTransitionData.round }"></span>
+                        </div>
+                        <h2 class="round-text">回合 {{ roundTransitionData.round }}</h2>
+                        <div class="auto-progress-bar">
+                            <div class="auto-progress-fill"></div>
+                        </div>
                     </div>
                 </div>
             </Transition>
@@ -659,6 +738,90 @@ onUnmounted(() => {
     color: #ffcc66;
 }
 
+/* Combo Bounce Animation */
+.combo-display.combo-bounce {
+    animation: comboBounce 0.3s ease-out;
+}
+
+@keyframes comboBounce {
+    0% { transform: scale(1); }
+    30% { transform: scale(1.3); }
+    50% { transform: scale(0.9); }
+    70% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+/* Combo Milestone */
+.combo-milestone {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 3rem;
+    font-weight: bold;
+    color: var(--color-gold);
+    text-shadow:
+        0 0 20px var(--color-gold),
+        0 0 40px var(--color-gold),
+        0 0 60px rgba(255, 215, 0, 0.5);
+    z-index: 200;
+    pointer-events: none;
+}
+
+.milestone-enter-active {
+    animation: milestoneIn 0.4s ease-out;
+}
+
+.milestone-leave-active {
+    animation: milestoneOut 0.3s ease-in;
+}
+
+@keyframes milestoneIn {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+    50% { transform: translate(-50%, -50%) scale(1.2); }
+    100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes milestoneOut {
+    0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5) translateY(-30px); }
+}
+
+/* Time Critical Animation */
+.time-wrapper.time-critical {
+    animation: timeCriticalPulse 0.5s ease-in-out infinite;
+}
+
+.time-wrapper.time-critical .bar-container {
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+}
+
+.time-wrapper.time-critical .bar-icon {
+    animation: iconShake 0.3s ease-in-out infinite;
+}
+
+@keyframes timeCriticalPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+}
+
+@keyframes iconShake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-2px); }
+    75% { transform: translateX(2px); }
+}
+
+.bar-value.value-critical {
+    color: var(--color-danger);
+    animation: valuePulse 0.5s ease-in-out infinite;
+    font-size: 1.1rem;
+}
+
+@keyframes valuePulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.1); }
+}
+
 .bar-shine {
     position: absolute;
     top: 2px;
@@ -843,25 +1006,99 @@ onUnmounted(() => {
 /* ==================== Round Transition (new feature) ==================== */
 .transition-overlay {
     cursor: pointer;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.75);
 }
 
 .transition-content {
     text-align: center;
-    animation: fadeInScale 0.3s ease;
+}
+
+.round-progress {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.progress-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    transition: all 0.3s ease;
+}
+
+.progress-dot.completed {
+    background: var(--color-success);
+    border-color: var(--color-success);
+    box-shadow: 0 0 10px var(--color-success);
+}
+
+.progress-dot.current {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 15px var(--color-primary);
+    animation: dotPulse 0.6s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
 }
 
 .round-text {
-    font-size: 3rem;
-    margin: 0 0 20px 0;
+    font-size: 3.5rem;
+    margin: 0 0 25px 0;
     color: var(--color-primary);
-    text-shadow: 0 0 20px rgba(0, 212, 255, 0.8);
+    text-shadow: 0 0 30px rgba(0, 212, 255, 0.8);
+    animation: roundTextIn 0.5s ease-out;
 }
 
-.continue-hint {
-    font-size: 1.2rem;
-    color: var(--color-text-dim);
-    opacity: 0.8;
+@keyframes roundTextIn {
+    0% { opacity: 0; transform: scale(2); }
+    60% { transform: scale(0.9); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.auto-progress-bar {
+    width: 200px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+    margin: 0 auto;
+    overflow: hidden;
+}
+
+.auto-progress-fill {
+    height: 100%;
+    background: var(--color-primary);
+    border-radius: 2px;
+    animation: autoProgress 1.2s linear forwards;
+}
+
+@keyframes autoProgress {
+    from { width: 0%; }
+    to { width: 100%; }
+}
+
+/* Round Transition Animation */
+.round-transition-enter-active {
+    animation: roundTransitionIn 0.3s ease-out;
+}
+
+.round-transition-leave-active {
+    animation: roundTransitionOut 0.2s ease-in;
+}
+
+@keyframes roundTransitionIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes roundTransitionOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
 }
 
 @keyframes fadeInScale {

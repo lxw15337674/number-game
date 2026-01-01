@@ -489,16 +489,15 @@ export class Game extends Scene {
      */
     private handleGameOver() {
         this.isPlaying = false;
-        
-        // 发送游戏结束事件
+
+        // 发送游戏结束事件给 Vue 显示弹窗
         EventBus.emit('game-over', {
             level: this.currentLevel,
             maxCombo: this.comboManager.getMaxCombo(),
             timeLeft: 0
         });
-        
-        // 切换到GameOver场景
-        this.scene.start('GameOver');
+
+        // 不切换场景，保持在 Game 场景等待重启
     }
     
     /**
